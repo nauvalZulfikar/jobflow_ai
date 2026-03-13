@@ -16,9 +16,9 @@ export default async function SkillsPage() {
 
   // Group by category
   const grouped = Object.entries(SKILL_CATEGORY_LABELS).map(([cat, label]) => ({
-    category: cat,
+    category: cat as import('@jobflow/shared').SkillCategory,
     label,
-    skills: skills.filter((s) => s.category === cat),
+    skills: skills.filter((s) => s.category === cat) as import('@jobflow/shared').UserSkill[],
   }))
 
   return (
