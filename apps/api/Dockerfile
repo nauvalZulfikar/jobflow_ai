@@ -8,7 +8,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json ./
 COPY packages/ ./packages/
 COPY apps/api/ ./apps/api/
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @jobflow/db generate
+RUN pnpm --filter @jobflow/db run db:generate
 USER jobflow
 EXPOSE 3001
 CMD ["pnpm", "--filter", "@jobflow/api", "start"]
