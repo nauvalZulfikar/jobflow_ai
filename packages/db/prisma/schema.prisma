@@ -1,0 +1,308 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ========== AUTH (NextAuth.js v5) ==========
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ========== USER ==========
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  role          String    @default("user") // "user" | "admin"
+  plan          String    @default("free") // "free" | "pro" | "team"
+  planExpiresAt DateTime?
+
+  accounts      Account[]
+  sessions      Session[]
+  resumes       Resume[]
+  coverLetters  CoverLetterTemplate[]
+  skills        UserSkill[]
+  portfolio     PortfolioItem[]
+  applications  JobApplication[]
+  savedSearches SavedSearch[]
+  watchlist     CompanyWatchlist[]
+  notifications Notification[]
+  integrations  UserIntegration[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ========== RESUME ==========
+
+model Resume {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  isDefault Boolean  @default(false)
+  content   Json
+  // { personalInfo, experience[], education[], skills[], projects[], certifications[] }
+  rawText   String?  @db.Text
+  fileUrl   String?  // URL ke file PDF/DOCX di R2
+  version   Int      @default(1)
+
+  applications JobApplication[]
+  abTestGroups ResumeABTest[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model CoverLetterTemplate {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String   @db.Text
+  isDefault Boolean  @default(false)
+
+  applications JobApplication[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserSkill {
+  id          String @id @default(cuid())
+  userId      String
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  category    String // "programming" | "framework" | "tool" | "soft"
+  proficiency String // "beginner" | "intermediate" | "advanced" | "expert"
+
+  @@unique([userId, name])
+}
+
+model PortfolioItem {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  url        String?
+  fileUrl    String?
+  categories String[] // tag kategori pekerjaan
+
+  createdAt DateTime @default(now())
+}
+
+// ========== JOBS ==========
+
+model Job {
+  id          String    @id @default(cuid())
+  externalId  String?
+  source      String    // "linkedin" | "indeed" | "glassdoor" | "jobstreet" | "kalibrr" | "techinasia" | "manual"
+  title       String
+  company     String
+  location    String?
+  salaryMin   Int?
+  salaryMax   Int?
+  currency    String?   @default("IDR")
+  isRemote    Boolean   @default(false)
+  jobType     String?   // "remote" | "hybrid" | "onsite"
+  description String    @db.Text
+  requirements String?  @db.Text
+  applyUrl    String
+  postedAt    DateTime?
+  closingDate DateTime?
+  industry    String?
+  companySize String?
+  duplicateOf String?   // referensi ke job.id master jika duplikat
+
+  applications JobApplication[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([source, externalId])
+  @@index([title, company])
+  @@index([source])
+  @@index([postedAt])
+}
+
+model SavedSearch {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  filters     Json      // { title, location, salary, remote, industry, ... }
+  notifyEmail Boolean   @default(true)
+  notifyPush  Boolean   @default(false)
+  frequency   String    @default("realtime") // "realtime" | "daily" | "weekly"
+  lastRunAt   DateTime?
+
+  createdAt DateTime @default(now())
+}
+
+model CompanyWatchlist {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName String
+  careerUrl   String?
+  lastChecked DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, companyName])
+}
+
+// ========== APPLICATIONS ==========
+
+model JobApplication {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  jobId          String
+  job            Job       @relation(fields: [jobId], references: [id])
+  resumeId       String?
+  resume         Resume?   @relation(fields: [resumeId], references: [id])
+  coverLetterId  String?
+  coverLetter    CoverLetterTemplate? @relation(fields: [coverLetterId], references: [id])
+  status         String    @default("saved")
+  // "saved" | "applied" | "screening" | "interview" | "offer" | "rejected" | "withdrawn"
+  appliedAt      DateTime?
+  followUpDate   DateTime?
+  recruiterName  String?
+  recruiterEmail String?
+  recruiterPhone String?
+  notes          String?   @db.Text
+  matchScore     Int?
+  salary         Int?
+
+  logs       ApplicationLog[]
+  interviews Interview[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, jobId])
+  @@index([userId, status])
+}
+
+model ApplicationLog {
+  id            String         @id @default(cuid())
+  applicationId String
+  application   JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  action        String         // "status_changed" | "email_received" | "note_added" | "interview_scheduled"
+  detail        String?        @db.Text
+
+  createdAt DateTime @default(now())
+}
+
+model Interview {
+  id            String         @id @default(cuid())
+  applicationId String
+  application   JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  scheduledAt   DateTime
+  type          String         // "phone" | "video" | "onsite" | "technical"
+  notes         String?        @db.Text
+  outcome       String?        // "passed" | "failed" | "pending"
+
+  createdAt DateTime @default(now())
+}
+
+// ========== NOTIFICATIONS ==========
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // "new_job" | "status_update" | "follow_up_reminder" | "interview_reminder"
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  link      String?
+
+  createdAt DateTime @default(now())
+}
+
+// ========== INTEGRATIONS ==========
+
+model UserIntegration {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String   // "gmail" | "outlook" | "linkedin" | "calendly"
+  accessToken  String   @db.Text
+  refreshToken String?  @db.Text
+  expiresAt    DateTime?
+  scope        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, provider])
+}
+
+// ========== ANALYTICS ==========
+
+model ResumeABTest {
+  id        String   @id @default(cuid())
+  resumeId  String
+  resume    Resume   @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+  group     String   // "A" | "B"
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+}
+
+// ========== INTERVIEW PREP ==========
+
+model StarStory {
+  id           String   @id @default(cuid())
+  userId       String
+  title        String
+  situation    String   @db.Text
+  task         String   @db.Text
+  action       String   @db.Text
+  result       String   @db.Text
+  competencies String[] // "leadership" | "problem_solving" | "teamwork" | etc.
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

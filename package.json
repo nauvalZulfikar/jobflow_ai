@@ -1,0 +1,27 @@
+{
+  "name": "jobflow-ai",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check",
+    "db:push": "pnpm --filter @jobflow/db db:push",
+    "db:seed": "pnpm --filter @jobflow/db db:seed",
+    "db:studio": "pnpm --filter @jobflow/db db:studio",
+    "db:generate": "pnpm --filter @jobflow/db db:generate",
+    "db:migrate": "pnpm --filter @jobflow/db db:migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2",
+    "@types/node": "^22.10.2",
+    "prettier": "^3.4.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@10.31.0"
+}
