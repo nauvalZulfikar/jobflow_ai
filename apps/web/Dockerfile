@@ -13,7 +13,7 @@ RUN pnpm --filter @jobflow/web build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
-RUN addgroup -S jobflow && adduser -S jobflow -G jobflow
+RUN groupadd -r jobflow && useradd -r -g jobflow jobflow
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 USER jobflow
