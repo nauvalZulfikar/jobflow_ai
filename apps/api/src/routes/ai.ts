@@ -192,7 +192,7 @@ export async function aiRoutes(app: FastifyInstance) {
       for await (const chunk of streamMockInterview(
         resume.content as ResumeContent,
         job.description,
-        parsed.data.history,
+        parsed.data.history as import('@jobflow/ai').InterviewMessage[],
         parsed.data.candidateAnswer
       )) {
         reply.raw.write(`data: ${JSON.stringify({ text: chunk })}\n\n`)

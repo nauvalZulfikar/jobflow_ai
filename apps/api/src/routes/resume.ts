@@ -94,10 +94,11 @@ export async function resumeRoutes(app: FastifyInstance) {
 
       const updated = await prisma.resume.update({
         where: { id: request.params.id },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         data: {
           ...(body.title ? { title: body.title as string } : {}),
           ...(body.isDefault !== undefined ? { isDefault: body.isDefault as boolean } : {}),
-          ...(body.content ? { content: body.content, rawText, version: existing.version + 1 } : {}),
+          ...(body.content ? { content: body.content as any, rawText, version: existing.version + 1 } : {}),
         },
       })
 

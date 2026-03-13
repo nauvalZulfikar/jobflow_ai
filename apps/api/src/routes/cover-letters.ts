@@ -49,7 +49,8 @@ export async function coverLetterRoutes(app: FastifyInstance) {
       }
 
       const tmpl = await prisma.coverLetterTemplate.create({
-        data: { userId: user.id, ...parsed.data },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: { userId: user.id, ...parsed.data } as any,
       })
       return reply.status(201).send(success(tmpl))
     } catch {
