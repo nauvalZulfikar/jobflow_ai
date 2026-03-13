@@ -62,7 +62,7 @@ export default async function JobDetailPage({ params }: { params: { id: string }
                     </span>
                   )}
                   {job.jobType ? (
-                    <span className={}>
+                    <span className="flex items-center gap-1.5">
                       {job.jobType === 'remote' ? <Wifi className="h-4 w-4" /> : <Briefcase className="h-4 w-4" />}
                       {job.jobType === 'remote' ? 'Remote' : job.jobType === 'hybrid' ? 'Hybrid' : 'On-site'}
                     </span>
