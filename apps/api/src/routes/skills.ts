@@ -28,7 +28,8 @@ export async function skillRoutes(app: FastifyInstance) {
       }
 
       const skill = await prisma.userSkill.create({
-        data: { userId: user.id, ...parsed.data },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        data: { userId: user.id, ...parsed.data } as any,
       })
       return reply.status(201).send(success(skill))
     } catch (err) {

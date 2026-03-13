@@ -77,7 +77,7 @@ export async function jobRoutes(app: FastifyInstance) {
       for (const source of sources) {
         for (const keyword of keywords) {
           const job = await scrapeQueue.add(
-            `${source}-${keyword}-${location}`,
+            `scrape-${source}-${keyword}` as string as any,
             { source, keyword, location, pages, triggeredBy: 'manual' },
             { delay: Math.floor(Math.random() * 5000) }
           )

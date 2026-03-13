@@ -9,7 +9,8 @@ const redis = new IORedis({
 })
 
 export const scrapeQueue = new Queue<ScrapeJobData>('scrape-jobs', {
-  connection: redis,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  connection: redis as any,
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 30_000 },
