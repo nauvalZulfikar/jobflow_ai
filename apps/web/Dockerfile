@@ -7,6 +7,7 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.json ./
 COPY packages/ ./packages/
 COPY apps/web/ ./apps/web/
 RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @jobflow/db generate
 RUN pnpm --filter @jobflow/web build
 
 FROM base AS runner
