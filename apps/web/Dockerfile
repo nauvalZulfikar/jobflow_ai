@@ -1,5 +1,4 @@
-FROM node:20-alpine AS base
-RUN apk add --no-cache openssl
+FROM node:20-slim AS base
 RUN npm install -g pnpm@9
 
 FROM base AS builder
@@ -20,4 +19,5 @@ COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 USER jobflow
 EXPOSE 3000
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 CMD ["node", "apps/web/server.js"]
