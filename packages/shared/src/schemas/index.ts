@@ -105,7 +105,7 @@ export const CreateApplicationSchema = z.object({
 })
 
 export const UpdateApplicationStatusSchema = z.object({
-  status: z.enum(['saved', 'applied', 'screening', 'interview', 'offer', 'rejected', 'withdrawn']),
+  status: z.enum(['saved', 'auto_applying', 'applied', 'screening', 'interview', 'offer', 'rejected', 'withdrawn']),
   notes: z.string().optional(),
 })
 

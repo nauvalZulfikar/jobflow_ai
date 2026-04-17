@@ -18,6 +18,7 @@ export interface ApplicationCard {
   id: string
   status: string
   matchScore: number | null
+  createdAt: Date
   job: {
     id: string
     title: string
@@ -97,11 +98,16 @@ export function KanbanCard({ app, onClick }: Props) {
         </div>
       )}
 
-      <span
-        className={`mt-2 inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[app.status] ?? ''}`}
-      >
-        {APPLICATION_STATUS_LABELS[app.status] ?? app.status}
-      </span>
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span
+          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[app.status] ?? ''}`}
+        >
+          {APPLICATION_STATUS_LABELS[app.status] ?? app.status}
+        </span>
+        <span className="text-xs text-gray-400">
+          {new Date(app.createdAt).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
     </div>
   )
 }

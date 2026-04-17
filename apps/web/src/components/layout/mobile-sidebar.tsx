@@ -4,23 +4,14 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { signOut } from 'next-auth/react'
-import { Menu, X, Briefcase, LayoutDashboard, FileText, KanbanSquare, MessageSquare, BarChart2, Settings, LogOut, Cpu, Mail } from 'lucide-react'
+import { Menu, X, Briefcase, LayoutDashboard, Settings, LogOut } from 'lucide-react'
 import { cn } from '@/lib/utils'
-
-const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/resume', label: 'Resume & Profil', icon: FileText },
-  { href: '/skills', label: 'Keahlian', icon: Cpu },
-  { href: '/cover-letters', label: 'Surat Lamaran', icon: Mail },
-  { href: '/jobs', label: 'Cari Lowongan', icon: Briefcase },
-  { href: '/applications', label: 'Lamaran Saya', icon: KanbanSquare },
-  { href: '/interview', label: 'Persiapan Interview', icon: MessageSquare },
-  { href: '/analytics', label: 'Analitik', icon: BarChart2, disabled: true },
-]
 
 export function MobileSidebar() {
   const [open, setOpen] = useState(false)
   const pathname = usePathname()
+
+  const isActive = pathname.startsWith('/dashboard') || pathname.startsWith('/jobs') || pathname.startsWith('/resume')
 
   return (
     <>
@@ -33,10 +24,7 @@ export function MobileSidebar() {
       </button>
 
       {open && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40 md:hidden"
-          onClick={() => setOpen(false)}
-        />
+        <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setOpen(false)} />
       )}
 
       <div
@@ -57,46 +45,22 @@ export function MobileSidebar() {
           </button>
         </div>
 
-        <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4">
-          {navItems.map(({ href, label, icon: Icon, disabled }) => {
-            const isActive = !disabled && (pathname === href || pathname.startsWith(href + '/'))
-
-            if (disabled) {
-              return (
-                <div
-                  key={href}
-                  className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-300"
-                >
-                  <Icon className="h-5 w-5 text-gray-300" />
-                  {label}
-                  <span className="ml-auto rounded-full bg-gray-100 px-1.5 py-0.5 text-xs text-gray-400">Soon</span>
-                </div>
-              )
-            }
-
-            return (
-              <Link
-                key={href}
-                href={href}
-                onClick={() => setOpen(false)}
-                className={cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
-                  isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-                )}
-              >
-                <Icon className={cn('h-5 w-5', isActive ? 'text-blue-600' : 'text-gray-400')} />
-                {label}
-              </Link>
-            )
-          })}
+        <nav className="flex-1 px-3 py-4">
+          <Link
+            href="/dashboard"
+            onClick={() => setOpen(false)}
+            className={cn(
+              'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+              isActive ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+            )}
+          >
+            <LayoutDashboard className={cn('h-5 w-5 flex-shrink-0', isActive ? 'text-blue-600' : 'text-gray-400')} />
+            Dashboard
+          </Link>
         </nav>
 
-        <div className="border-t border-gray-200 px-3 py-4 space-y-1">
-          <Link
-            href="/settings"
-            onClick={() => setOpen(false)}
-            className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100"
-          >
+        <div className="border-t border-gray-200 px-3 py-4 space-y-0.5">
+          <Link href="/settings" onClick={() => setOpen(false)} className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-100">
             <Settings className="h-5 w-5 text-gray-400" />
             Pengaturan
           </Link>

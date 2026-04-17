@@ -13,9 +13,12 @@ RUN pnpm --filter @jobflow/web build
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apt-get update -y && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 RUN groupadd -r jobflow && useradd -r -g jobflow jobflow
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/packages/db/src/generated/client/*.so.node ./packages/db/src/generated/client/
+RUN mkdir -p /app/apps/web/.next/cache && chown -R jobflow:jobflow /app/apps/web/.next/cache
 USER jobflow
 EXPOSE 3000
 ENV PORT=3000

@@ -1,6 +1,6 @@
 import { SignJWT } from 'jose'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001'
+const API_URL = process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3003'
 const JWT_SECRET = new TextEncoder().encode(
   process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET ?? 'dev-secret'
 )

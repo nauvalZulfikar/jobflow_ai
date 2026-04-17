@@ -1,0 +1,191 @@
+{
+  "name": "Nauval Zulfikar",
+  "title": "Data Scientist",
+  "location": "Bandung, Indonesia",
+  "work_authorization": "Eligible to work in the UK (Graduate Visa)",
+  "contact": {
+    "email": "zulfikar.nauval1998@gmail.com",
+    "phone": "+62 82117043831",
+    "linkedin": "https://linkedin.com/in/nauval-zulfikar/",
+    "github": "https://github.com/NauvalZulfikar"
+  },
+  "profile": "Results-driven Senior Data Scientist with 5+ years' experience, equipped with MSc in Business Analytics, building and deploying Machine Learning models, credit risk and fraud detection systems, ETL pipelines, and NLP solutions using Python, SQL, AWS, and A/B Testing, with deep expertise in regulated financial environments and data governance.",
+  "skills": [
+    "Python",
+    "SQL",
+    "R",
+    "PySpark",
+    "Hadoop",
+    "Docker",
+    "NoSQL",
+    "AI/ML",
+    "Deep Learning",
+    "NLP",
+    "LLM",
+    "RAG",
+    "Bayesian Statistics",
+    "Causal Inference",
+    "Time Series Analysis",
+    "Model Validation",
+    "Model Reliability",
+    "Credit Risk Modeling",
+    "Fraud Detection",
+    "Model Governance",
+    "Data Privacy",
+    "Workflow Orchestration",
+    "Model Robustness",
+    "Model Staleness",
+    "AI-powered Systems",
+    "Supervised Learning",
+    "Unsupervised Learning",
+    "Attribution Modeling",
+    "Customer Journey Optimisation",
+    "Web Analytics",
+    "A/B Testing",
+    "Predictive Modeling",
+    "Model Verification",
+    "Hypothesis Testing",
+    "Regression",
+    "Classification",
+    "AWS",
+    "ETL",
+    "Power BI",
+    "Tableau",
+    "Streamlit",
+    "Dashboards",
+    "Data Storytelling",
+    "NumPy",
+    "Scipy",
+    "scikit-learn",
+    "PyTorch",
+    "TensorFlow",
+    "Keras",
+    "Git"
+  ],
+  "work_experience": [
+    {
+      "company": "Public Works and Spatial Planning (PUTR) Department",
+      "location": "Bandung, Indonesia",
+      "position": "Data Scientist & Project Manager",
+      "period": "September 2022 – Present",
+      "achievements": [
+        "Led team to build automated data pipelines and dashboards replacing manual data entry",
+        "Reduced project delivery time by 45%",
+        "Improved data processing efficiency by 20%",
+        "Implemented governance and privacy practices across analytics workflows"
+      ],
+      "tools": ["Python", "PySpark", "AWS", "Power BI", "Social Media APIs", "Agile", "Jira"]
+    },
+    {
+      "company": "Syncwell",
+      "location": "Birmingham, United Kingdom (Remote)",
+      "position": "Marketing Data Scientist",
+      "period": "July 2024 – September 2024",
+      "achievements": [
+        "Developed predictive ML models for marketing optimisation",
+        "Improved customer segmentation and engagement",
+        "Increased click-through rate by 40%",
+        "Achieved 22% growth in followers"
+      ],
+      "tools": ["Python", "SQL", "Google Optimize", "Power BI", "Tableau", "Salesforce"]
+    },
+    {
+      "company": "PCOS Challenge",
+      "location": "Birmingham, United Kingdom (Remote)",
+      "position": "Strategic Data Scientist Specialist",
+      "period": "June 2024 – August 2024",
+      "achievements": [
+        "Developed customer attribution model",
+        "Automated reporting workflows",
+        "Reduced manual workload by 80%",
+        "Created interactive visualisations for patient financial insights"
+      ],
+      "tools": ["Python", "Streamlit", "Power BI", "PySpark", "Hadoop", "Marketing Automation"]
+    },
+    {
+      "company": "Bank Muamalat Indonesia",
+      "location": "Jakarta, Indonesia",
+      "position": "Lead Data Scientist – Leadership Development Program",
+      "period": "November 2019 – August 2022",
+      "achievements": [
+        "Developed NLP models for credit portfolio analysis and risk scoring",
+        "Implemented real-time databases for cross-functional collaboration",
+        "Conducted A/B testing for marketing strategy optimisation",
+        "Improved investment returns by 5.3%"
+      ],
+      "tools": ["AWS", "Power BI", "Docker", "NoSQL", "SQL", "PySpark", "Agile", "Jira"]
+    }
+  ],
+  "projects": [
+    {
+      "name": "Performance Analysis in Sport Footwear Sales Prediction Using Machine Learning",
+      "type": "Publication",
+      "date": "January 2025",
+      "description": "Developed and compared multiple machine learning models for sales prediction accuracy."
+    },
+    {
+      "name": "Machine Scheduler Automation",
+      "type": "Software Development Project",
+      "date": "January 2025",
+      "description": "Built a Streamlit-based machine scheduling system with Gantt charts and real-time dashboards that optimised production planning by 63%.",
+      "tools": ["Python", "Streamlit", "Workflow Orchestration"]
+    },
+    {
+      "name": "CV-Job Description Suitability Checker Using LLM",
+      "type": "Software Development Project",
+      "date": "November 2024",
+      "description": "Developed a DeBERTa-v3 based job matching tool using RAG pipelines to outperform traditional ATS systems."
+    }
+  ],
+  "education": [
+    {
+      "institution": "Aston University",
+      "degree": "MSc Business Analytics",
+      "location": "Birmingham, United Kingdom",
+      "period": "September 2023 – September 2024",
+      "achievements": [
+        "1st Winner Aston Enterprise Scholarship (full tuition)",
+        "Aston Pitching Contest 2024 Runner-up"
+      ],
+      "dissertation": "Enhancing Supply Chain Information Sharing Systems Through Blockchain"
+    },
+    {
+      "institution": "Ritsumeikan Asia Pacific University",
+      "degree": "BBA Innovation and Economics",
+      "location": "Beppu, Japan",
+      "period": "October 2016 – September 2019",
+      "scholarships": [
+        "APU 50% Tuition Reduction Scholarship",
+        "JASSO Scholarship"
+      ]
+    }
+  ],
+  "informal_education": [
+    {
+      "program": "Data Science Global Accelerator",
+      "institution": "Qarir Generator Bootcamp",
+      "location": "Dubai, UAE",
+      "period": "April 2023 – June 2023"
+    },
+    {
+      "program": "NLP Engineer Training",
+      "institution": "Indonesia AI",
+      "location": "Indonesia",
+      "period": "May 2023 – November 2023"
+    }
+  ],
+  "languages": [
+    {
+      "language": "Indonesian",
+      "level": "Native"
+    },
+    {
+      "language": "English",
+      "level": "Native"
+    },
+    {
+      "language": "Japanese",
+      "level": "Intermediate"
+    }
+  ]
+}

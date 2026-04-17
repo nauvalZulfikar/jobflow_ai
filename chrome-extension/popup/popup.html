@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { width: 360px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 13px; color: #1a1a1a; background: #f8f9fa; }
+    .header { background: #7c3aed; color: white; padding: 12px 16px; display: flex; align-items: center; gap: 8px; }
+    .header h1 { font-size: 15px; font-weight: 600; }
+    .section { padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+    .section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #6b7280; margin-bottom: 8px; letter-spacing: 0.5px; }
+    input[type="text"], input[type="number"] { width: 100%; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; outline: none; }
+    input:focus { border-color: #7c3aed; box-shadow: 0 0 0 2px rgba(124,58,237,0.15); }
+    .btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.15s; }
+    .btn-primary { background: #7c3aed; color: white; }
+    .btn-primary:hover { background: #6d28d9; }
+    .btn-danger { background: #ef4444; color: white; }
+    .btn-danger:hover { background: #dc2626; }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .stat { text-align: center; padding: 8px; background: white; border-radius: 6px; border: 1px solid #e5e7eb; }
+    .stat-value { font-size: 20px; font-weight: 700; }
+    .stat-value.green { color: #16a34a; }
+    .stat-value.yellow { color: #ca8a04; }
+    .stat-value.red { color: #dc2626; }
+    .stat-label { font-size: 10px; color: #6b7280; margin-top: 2px; }
+    .progress { height: 4px; background: #e5e7eb; border-radius: 2px; overflow: hidden; margin-top: 8px; }
+    .progress-bar { height: 100%; background: #7c3aed; transition: width 0.3s; }
+    .logs { max-height: 160px; overflow-y: auto; background: #111827; color: #9ca3af; padding: 8px 10px; border-radius: 6px; font-family: 'SF Mono', Menlo, monospace; font-size: 11px; line-height: 1.6; }
+    .logs:empty::after { content: 'No activity yet'; color: #4b5563; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .flex-1 { flex: 1; }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 500; }
+    .status-idle { background: #f3f4f6; color: #6b7280; }
+    .status-running { background: #dcfce7; color: #16a34a; }
+    .mt-2 { margin-top: 8px; }
+    .text-center { text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 3h-8l-2 4h12z"/></svg>
+    <h1>Jobflow Auto-Apply</h1>
+  </div>
+
+  <!-- Auth -->
+  <div class="section" id="auth-section">
+    <div class="section-title">API Token</div>
+    <div class="row">
+      <input type="text" id="token-input" placeholder="Paste token dari Settings Jobflow..." class="flex-1">
+      <button class="btn btn-primary btn-sm" id="save-token-btn">Save</button>
+    </div>
+  </div>
+
+  <!-- Status -->
+  <div class="section">
+    <div class="row" style="justify-content: space-between;">
+      <div class="section-title" style="margin:0;">Status</div>
+      <span class="status-badge status-idle" id="status-badge">Idle</span>
+    </div>
+    <div class="progress mt-2"><div class="progress-bar" id="progress-bar" style="width:0%"></div></div>
+    <div class="text-center mt-2" id="progress-text" style="font-size:11px;color:#6b7280;">—</div>
+  </div>
+
+  <!-- Stats -->
+  <div class="section">
+    <div class="stats">
+      <div class="stat"><div class="stat-value green" id="stat-applied">0</div><div class="stat-label">Applied</div></div>
+      <div class="stat"><div class="stat-value yellow" id="stat-skipped">0</div><div class="stat-label">Skipped</div></div>
+      <div class="stat"><div class="stat-value red" id="stat-failed">0</div><div class="stat-label">Failed</div></div>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div class="section">
+    <div class="row">
+      <button class="btn btn-primary flex-1" id="start-btn">▶ Start Auto-Apply</button>
+      <button class="btn btn-danger flex-1" id="stop-btn" style="display:none;">■ Stop</button>
+    </div>
+  </div>
+
+  <!-- Logs -->
+  <div class="section" style="border-bottom:none;">
+    <div class="section-title">Activity Log</div>
+    <div class="logs" id="logs"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

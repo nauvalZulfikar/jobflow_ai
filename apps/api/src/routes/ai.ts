@@ -1,6 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '@jobflow/db'
-import { matchScore, keywordGapAnalysis, tailorResume, generateCoverLetter, streamMockInterview } from '@jobflow/ai'
+import {
+  matchScore, keywordGapAnalysis, tailorResume, generateCoverLetter, streamMockInterview,
+  generateQuestionBank, researchCompany, benchmarkSalary, explainRoleFit, formatStarStory,
+} from '@jobflow/ai'
 import { success, failure } from '@jobflow/shared'
 import type { ResumeContent } from '@jobflow/shared'
 import { z } from 'zod'
@@ -203,6 +206,76 @@ export async function aiRoutes(app: FastifyInstance) {
     } catch {
       reply.raw.write(`data: ${JSON.stringify({ error: 'Gagal menjalankan simulasi wawancara' })}\n\n`)
       reply.raw.end()
+    }
+  })
+
+  // POST /api/ai/question-bank
+  app.post('/question-bank', async (request, reply) => {
+    try {
+      const body = request.body as { resumeText?: string; jobDescription?: string }
+      if (!body.resumeText || !body.jobDescription) {
+        return reply.status(400).send(failure('VALIDATION_ERROR', 'resumeText dan jobDescription wajib diisi'))
+      }
+      const result = await generateQuestionBank(body.resumeText, body.jobDescription)
+      return reply.send(success(result))
+    } catch {
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal membuat bank pertanyaan'))
+    }
+  })
+
+  // POST /api/ai/company-research
+  app.post('/company-research', async (request, reply) => {
+    try {
+      const body = request.body as { companyName?: string; jobTitle?: string }
+      if (!body.companyName) {
+        return reply.status(400).send(failure('VALIDATION_ERROR', 'companyName wajib diisi'))
+      }
+      const result = await researchCompany(body.companyName, body.jobTitle ?? '')
+      return reply.send(success(result))
+    } catch {
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal melakukan riset perusahaan'))
+    }
+  })
+
+  // POST /api/ai/salary-benchmark
+  app.post('/salary-benchmark', async (request, reply) => {
+    try {
+      const body = request.body as { jobTitle?: string; location?: string; yearsExperience?: number }
+      if (!body.jobTitle) {
+        return reply.status(400).send(failure('VALIDATION_ERROR', 'jobTitle wajib diisi'))
+      }
+      const result = await benchmarkSalary(body.jobTitle, body.location ?? 'Indonesia', body.yearsExperience ?? 0)
+      return reply.send(success(result))
+    } catch {
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal mengambil data benchmark gaji'))
+    }
+  })
+
+  // POST /api/ai/role-fit
+  app.post('/role-fit', async (request, reply) => {
+    try {
+      const body = request.body as { resumeText?: string; jobDescription?: string }
+      if (!body.resumeText || !body.jobDescription) {
+        return reply.status(400).send(failure('VALIDATION_ERROR', 'resumeText dan jobDescription wajib diisi'))
+      }
+      const result = await explainRoleFit(body.resumeText, body.jobDescription)
+      return reply.send(success(result))
+    } catch {
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal menganalisis kecocokan peran'))
+    }
+  })
+
+  // POST /api/ai/star-formatter
+  app.post('/star-formatter', async (request, reply) => {
+    try {
+      const body = request.body as { rawText?: string }
+      if (!body.rawText) {
+        return reply.status(400).send(failure('VALIDATION_ERROR', 'rawText wajib diisi'))
+      }
+      const result = await formatStarStory(body.rawText)
+      return reply.send(success(result))
+    } catch {
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal memformat cerita STAR'))
     }
   })
 }

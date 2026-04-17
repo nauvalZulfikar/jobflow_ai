@@ -1,7 +1,7 @@
 generator client {
   provider      = "prisma-client-js"
   output        = "../src/generated/client"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x", "debian-openssl-1.1.x"]
 }
 
 datasource db {
@@ -69,6 +69,12 @@ model User {
   watchlist     CompanyWatchlist[]
   notifications Notification[]
   integrations  UserIntegration[]
+
+  // Auto-apply settings
+  autoApplyEnabled    Boolean  @default(false)
+  autoApplyResumeId   String?  // resume to use for auto-apply
+  autoApplyMaxDaily   Int      @default(20)
+  autoApplyLastRunAt  DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -158,6 +164,7 @@ model Job {
   applications JobApplication[]
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([source, externalId])
   @@index([title, company])
@@ -215,8 +222,9 @@ model JobApplication {
   matchScore     Int?
   salary         Int?
 
-  logs       ApplicationLog[]
-  interviews Interview[]
+  logs             ApplicationLog[]
+  interviews       Interview[]
+  autoApplySession AutoApplySession?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -290,6 +298,43 @@ model ResumeABTest {
   isActive  Boolean  @default(true)
 
   createdAt DateTime @default(now())
+}
+
+// ========== AUTO-APPLY ==========
+
+model AutoApplySession {
+  id            String   @id @default(cuid())
+  applicationId String   @unique
+  application   JobApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  status        String   @default("detecting")
+  // "detecting" | "pending_approval" | "approved" | "submitting" | "submitted" | "failed" | "skipped"
+
+  detectedFields Json?
+  answers        Json?
+
+  submittedAt   DateTime?
+  failureReason String?   @db.Text
+  screenshotUrl String?
+
+  siteUrl       String
+  source        String
+
+  logs          AutoApplyLog[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model AutoApplyLog {
+  id        String           @id @default(cuid())
+  sessionId String
+  session   AutoApplySession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  level     String
+  step      String
+  message   String           @db.Text
+  metadata  Json?
+  createdAt DateTime         @default(now())
 }
 
 // ========== INTERVIEW PREP ==========

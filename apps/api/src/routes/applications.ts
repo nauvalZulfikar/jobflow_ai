@@ -20,6 +20,8 @@ export async function applicationRoutes(app: FastifyInstance) {
               location: true,
               isRemote: true,
               closingDate: true,
+              applyUrl: true,
+              source: true,
             },
           },
         },

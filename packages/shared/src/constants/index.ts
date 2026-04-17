@@ -10,6 +10,7 @@ export const APPLICATION_STATUSES = [
 
 export const APPLICATION_STATUS_LABELS: Record<string, string> = {
   saved: 'Disimpan',
+  auto_applying: 'Auto-apply',
   applied: 'Dilamar',
   screening: 'Screening',
   interview: 'Wawancara',

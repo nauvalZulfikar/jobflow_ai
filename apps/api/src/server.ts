@@ -11,7 +11,18 @@ import { applicationRoutes } from './routes/applications.js'
 import { storageRoutes } from './routes/storage.js'
 import { skillRoutes } from './routes/skills.js'
 import { coverLetterRoutes } from './routes/cover-letters.js'
+import { userRoutes } from './routes/users.js'
+import { savedSearchRoutes } from './routes/saved-searches.js'
+import { watchlistRoutes } from './routes/watchlist.js'
+import { portfolioRoutes } from './routes/portfolio.js'
+import { notificationRoutes } from './routes/notifications.js'
+import { interviewRoutes } from './routes/interviews.js'
+import { starStoryRoutes } from './routes/star-stories.js'
+import { billingRoutes } from './routes/billing.js'
+import { teamRoutes } from './routes/teams.js'
+import { autoApplyRoutes } from './routes/auto-apply.js'
 import { authMiddleware } from './middleware/auth.js'
+import { processFollowUpReminders } from './cron/follow-up.js'
 
 const PORT = Number(process.env.PORT ?? 3001)
 const HOST = process.env.HOST ?? '0.0.0.0'
@@ -60,12 +71,25 @@ async function bootstrap() {
   await app.register(storageRoutes, { prefix: '/api/storage' })
   await app.register(skillRoutes, { prefix: '/api/skills' })
   await app.register(coverLetterRoutes, { prefix: '/api/cover-letters' })
+  await app.register(userRoutes, { prefix: '/api/users' })
+  await app.register(savedSearchRoutes, { prefix: '/api/saved-searches' })
+  await app.register(watchlistRoutes, { prefix: '/api/watchlist' })
+  await app.register(portfolioRoutes, { prefix: '/api/portfolio' })
+  await app.register(notificationRoutes, { prefix: '/api/notifications' })
+  await app.register(interviewRoutes, { prefix: '/api/interviews' })
+  await app.register(starStoryRoutes, { prefix: '/api/star-stories' })
+  await app.register(billingRoutes, { prefix: '/api/billing' })
+  await app.register(teamRoutes, { prefix: '/api/teams' })
+  await app.register(autoApplyRoutes, { prefix: '/api/applications' })
 
   // Health check
   app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }))
 
   await app.listen({ port: PORT, host: HOST })
   console.log(`🚀 API server running at http://localhost:${PORT}`)
+
+  // Cron: process follow-up reminders every hour
+  setInterval(processFollowUpReminders, 60 * 60 * 1000)
 }
 
 bootstrap().catch((err) => {

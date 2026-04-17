@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Jobflow Auto-Apply",
+  "version": "1.0.0",
+  "description": "Auto-apply ke LinkedIn Easy Apply via Jobflow",
+  "permissions": ["tabs", "activeTab", "storage", "alarms"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://jobflow.aureonforge.com/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/jobs/*"],
+      "js": ["content/linkedin-apply.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  }
+}

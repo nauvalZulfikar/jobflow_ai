@@ -140,6 +140,7 @@ export type Job = {
 
 export type ApplicationStatus =
   | 'saved'
+  | 'auto_applying'
   | 'applied'
   | 'screening'
   | 'interview'
@@ -195,9 +196,50 @@ export type KeywordGapResult = {
   recommendations: string[]
 }
 
+// ========== Auto-Apply Types ==========
+
+export type FormFieldType = 'text' | 'textarea' | 'select' | 'radio' | 'checkbox' | 'number' | 'file'
+
+export type DetectedField = {
+  name: string
+  label: string
+  type: FormFieldType
+  required: boolean
+  options?: string[]
+  maxLength?: number
+}
+
+export type FormAnswer = {
+  fieldName: string
+  label: string
+  value: string
+  aiGenerated: boolean
+  editedByUser?: boolean
+}
+
+export type AutoApplyStatus =
+  | 'detecting'
+  | 'pending_approval'
+  | 'approved'
+  | 'submitting'
+  | 'submitted'
+  | 'failed'
+  | 'skipped'
+
+export type AutoApplyJobData = {
+  sessionId: string
+  applicationId: string
+  userId: string
+  jobId: string
+  siteUrl: string
+  source: 'linkedin' | 'indeed' | 'jobstreet'
+  answers: FormAnswer[]
+  resumeFileUrl?: string
+}
+
 // ========== Scraper Types ==========
 
-export type ScrapeSource = 'jobstreet' | 'linkedin' | 'indeed'
+export type ScrapeSource = 'jobstreet' | 'linkedin' | 'indeed' | 'glints'
 
 export type ScrapeJobData = {
   source: ScrapeSource

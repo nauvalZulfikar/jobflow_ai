@@ -3,7 +3,9 @@ import { createRedisConnection, SCRAPE_QUEUE_NAME } from '../queues/index.js'
 import { JobStreetScraper } from '../scrapers/jobstreet.scraper.js'
 import { LinkedInScraper } from '../scrapers/linkedin.scraper.js'
 import { IndeedScraper } from '../scrapers/indeed.scraper.js'
+import { GlintsScraper } from '../scrapers/glints.scraper.js'
 import { upsertJob } from '../processors/job-upsert.js'
+import { runAutoApplyPipeline } from './auto-apply-pipeline.worker.js'
 import type { ScrapeJobData, ScrapeSource } from '@jobflow/shared'
 import { BaseScraper } from '../scrapers/base.scraper.js'
 import pino from 'pino'
@@ -15,6 +17,7 @@ function createScraper(source: ScrapeSource): BaseScraper {
     case 'jobstreet': return new JobStreetScraper()
     case 'linkedin': return new LinkedInScraper()
     case 'indeed': return new IndeedScraper()
+    case 'glints': return new GlintsScraper()
     default: throw new Error(`Unknown scrape source: ${source}`)
   }
 }
@@ -63,6 +66,11 @@ export function startScrapeWorker() {
 
   worker.on('completed', (job, result) => {
     logger.info({ jobId: job.id, result }, 'Scrape job completed')
+    if (result.created > 0) {
+      runAutoApplyPipeline().catch((err) => {
+        logger.error({ err }, 'Auto-apply pipeline failed after scrape')
+      })
+    }
   })
 
   worker.on('failed', (job, err) => {
