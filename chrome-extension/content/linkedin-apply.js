@@ -153,11 +153,35 @@ async function handleApply() {
   }
 }
 
+function getExternalApplyUrl() {
+  // Find the external "Apply" button (not Easy Apply)
+  const links = document.querySelectorAll('a')
+  for (const link of links) {
+    const text = link.textContent.trim().toLowerCase()
+    if ((text === 'apply' || text.includes('apply now')) && !text.includes('easy') && link.href) {
+      return { url: link.href }
+    }
+  }
+  // Check for "Apply" buttons that open external links
+  const buttons = document.querySelectorAll('button')
+  for (const btn of buttons) {
+    const text = btn.textContent.trim().toLowerCase()
+    if ((text === 'apply' || text.includes('apply now')) && !text.includes('easy')) {
+      // Click it and see if it opens a new tab/navigates
+      return { url: null, click: true }
+    }
+  }
+  return { url: null }
+}
+
 // Listen for messages from background service worker
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'APPLY_TO_JOB') {
     handleApply().then(sendResponse)
-    return true // keep channel open for async
+    return true
+  }
+  if (message.action === 'GET_EXTERNAL_APPLY_URL') {
+    sendResponse(getExternalApplyUrl())
   }
   if (message.action === 'PING') {
     sendResponse({ ok: true })

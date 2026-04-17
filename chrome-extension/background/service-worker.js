@@ -1,4 +1,4 @@
-import { fetchSavedApplications, updateStatus } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus } from '../lib/api-client.js'
 
 const JOB_DELAY_MIN = 30000
 const JOB_DELAY_MAX = 90000
@@ -8,7 +8,7 @@ function randomDelay(min = JOB_DELAY_MIN, max = JOB_DELAY_MAX) {
 }
 
 async function getState() {
-  return chrome.storage.local.get(['isRunning', 'queue', 'currentIndex', 'results', 'logs', 'dailyLimit'])
+  return chrome.storage.local.get(['isRunning', 'queue', 'currentIndex', 'results', 'logs', 'dailyLimit', 'resumeData'])
 }
 
 async function setState(updates) {
@@ -23,18 +23,21 @@ async function addLog(msg) {
 }
 
 async function startAutoApply() {
-  await addLog('Fetching saved applications...')
+  await addLog('Fetching applications & resume...')
 
-  let applications
+  let applications, resumeData
   try {
-    applications = await fetchSavedApplications()
+    [applications, resumeData] = await Promise.all([
+      fetchSavedApplications(),
+      fetchResumeData(),
+    ])
   } catch (err) {
     await addLog(`Error: ${err.message}`)
     return
   }
 
   if (applications.length === 0) {
-    await addLog('No saved LinkedIn jobs to apply')
+    await addLog('No saved jobs to apply')
     return
   }
 
@@ -46,9 +49,10 @@ async function startAutoApply() {
     queue,
     currentIndex: 0,
     results: { applied: 0, skipped: 0, failed: 0 },
+    resumeData,
   })
 
-  await addLog(`Found ${queue.length} jobs. Starting auto-apply...`)
+  await addLog(`Found ${queue.length} jobs. Resume loaded. Starting...`)
   processNextJob()
 }
 
@@ -57,11 +61,24 @@ async function stopAutoApply() {
   await addLog('Stopped by user')
 }
 
+function waitForTabLoad(tabId, timeout = 25000) {
+  return new Promise(resolve => {
+    function onUpdate(tid, info) {
+      if (tid === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdate)
+        resolve(true)
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdate)
+    setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdate); resolve(false) }, timeout)
+  })
+}
+
 async function processNextJob() {
   const state = await getState()
   if (!state.isRunning) return
 
-  const { queue = [], currentIndex = 0, results = { applied: 0, skipped: 0, failed: 0 } } = state
+  const { queue = [], currentIndex = 0, results = { applied: 0, skipped: 0, failed: 0 }, resumeData } = state
   if (currentIndex >= queue.length) {
     await setState({ isRunning: false })
     await addLog(`Done! Applied: ${results.applied}, Skipped: ${results.skipped}, Failed: ${results.failed}`)
@@ -75,15 +92,17 @@ async function processNextJob() {
 
   await addLog(`[${currentIndex + 1}/${queue.length}] ${jobTitle} @ ${company}`)
 
-  if (!applyUrl || !applyUrl.includes('linkedin.com')) {
-    await addLog('  ❌ Skipped — not LinkedIn')
-    results.skipped++
+  if (!applyUrl) {
+    await addLog('  ❌ No apply URL')
+    results.failed++
     await setState({ currentIndex: currentIndex + 1, results })
     scheduleNext()
     return
   }
 
-  // Open LinkedIn job page in new tab
+  const isLinkedIn = applyUrl.includes('linkedin.com')
+
+  // Open job page
   let tab
   try {
     tab = await chrome.tabs.create({ url: applyUrl, active: false })
@@ -95,36 +114,41 @@ async function processNextJob() {
     return
   }
 
-  // Wait for page load
-  await new Promise(resolve => {
-    function onUpdate(tabId, info) {
-      if (tabId === tab.id && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(onUpdate)
-        resolve()
-      }
-    }
-    chrome.tabs.onUpdated.addListener(onUpdate)
-    // Timeout after 20 seconds
-    setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(onUpdate)
-      resolve()
-    }, 20000)
-  })
-
-  // Wait extra for LinkedIn JS to load
+  await waitForTabLoad(tab.id)
   await new Promise(r => setTimeout(r, 3000))
 
-  // Send message to content script
   let result
-  try {
-    result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
-  } catch (err) {
-    await addLog(`  ❌ Content script error: ${err.message}`)
-    results.failed++
-    try { chrome.tabs.remove(tab.id) } catch {}
-    await setState({ currentIndex: currentIndex + 1, results })
-    scheduleNext()
-    return
+
+  if (isLinkedIn) {
+    // LinkedIn Easy Apply flow — use linkedin-apply.js content script (auto-injected)
+    try {
+      result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
+    } catch (err) {
+      // If Easy Apply fails/not available, try external apply
+      result = { status: 'skipped', reason: 'no_easy_apply' }
+    }
+
+    // If no Easy Apply, find and click external Apply button → navigate to ATS
+    if (result.status === 'skipped' && result.reason === 'no_easy_apply') {
+      await addLog('  → No Easy Apply, trying external apply...')
+
+      // Click the external Apply button on LinkedIn
+      try {
+        const externalUrl = await chrome.tabs.sendMessage(tab.id, { action: 'GET_EXTERNAL_APPLY_URL' })
+        if (externalUrl?.url) {
+          await chrome.tabs.update(tab.id, { url: externalUrl.url })
+          await waitForTabLoad(tab.id)
+          await new Promise(r => setTimeout(r, 3000))
+          // Inject ATS content script and fill form
+          result = await applyViaATS(tab.id, resumeData)
+        }
+      } catch {
+        result = { status: 'failed', reason: 'external_apply_failed' }
+      }
+    }
+  } else {
+    // Direct ATS page — inject and fill
+    result = await applyViaATS(tab.id, resumeData)
   }
 
   // Close tab
@@ -134,10 +158,10 @@ async function processNextJob() {
   if (result.status === 'applied') {
     await updateStatus(app.id, 'applied')
     results.applied++
-    await addLog(`  ✅ Applied${result.reason === 'already_applied' ? ' (was already applied)' : ''}`)
-  } else if (result.status === 'skipped' || result.status === 'needs_review') {
+    await addLog(`  ✅ Applied${result.reason ? ` (${result.reason})` : ''}`)
+  } else if (result.status === 'needs_review') {
     results.skipped++
-    await addLog(`  ⏭ Skipped: ${result.reason}`)
+    await addLog(`  ⏭ Needs review: ${result.reason}`)
   } else {
     results.failed++
     await addLog(`  ❌ Failed: ${result.reason}`)
@@ -147,6 +171,26 @@ async function processNextJob() {
   scheduleNext()
 }
 
+async function applyViaATS(tabId, resumeData) {
+  try {
+    // Inject the ATS content script
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['content/ats-apply.js'],
+    })
+    await new Promise(r => setTimeout(r, 1000))
+
+    // Send resume data and trigger form fill + submit
+    const result = await chrome.tabs.sendMessage(tabId, {
+      action: 'ATS_APPLY',
+      resumeData: resumeData || {},
+    })
+    return result || { status: 'failed', reason: 'no_response' }
+  } catch (err) {
+    return { status: 'failed', reason: `ats_inject_failed: ${err.message}` }
+  }
+}
+
 function scheduleNext() {
   const delay = randomDelay()
   const seconds = Math.round(delay / 1000)
@@ -154,12 +198,10 @@ function scheduleNext() {
   addLog(`  ⏳ Next in ${seconds}s`)
 }
 
-// Alarm handler
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'nextJob') processNextJob()
 })
 
-// Message handler from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'START') {
     startAutoApply().then(() => sendResponse({ ok: true }))

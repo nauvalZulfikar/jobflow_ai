@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@shared-postgres:5432/jobflow
+      DATABASE_URL: postgresql://postgres:1bf57b0b91f206e45acdc9c0baf51289@shared-postgres:5432/jobflow
       REDIS_HOST: shared-redis
       REDIS_PORT: 6379
       NODE_ENV: production
@@ -16,6 +16,10 @@ services:
       - scraper
     ports:
       - '3003:3003'
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - default
       - shared
@@ -28,10 +32,14 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@shared-postgres:5432/jobflow
+      DATABASE_URL: postgresql://postgres:1bf57b0b91f206e45acdc9c0baf51289@shared-postgres:5432/jobflow
       REDIS_HOST: shared-redis
       REDIS_PORT: 6379
       NODE_ENV: production
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     networks:
       - default
       - shared
@@ -47,11 +55,15 @@ services:
       NODE_ENV: production
       NEXTAUTH_URL: ${NEXTAUTH_URL}
       API_URL: http://api:3003/api
-      DATABASE_URL: postgresql://postgres:postgres@shared-postgres:5432/jobflow
+      DATABASE_URL: postgresql://postgres:1bf57b0b91f206e45acdc9c0baf51289@shared-postgres:5432/jobflow
     depends_on:
       - api
     ports:
       - '3000:3000'
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     networks:
       - default
       - shared
