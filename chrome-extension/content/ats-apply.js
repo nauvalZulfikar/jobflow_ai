@@ -257,7 +257,21 @@ async function fillForm(resumeData) {
 
 async function handleATSApply(resumeData) {
   try {
-    await humanDelay(2000, 3000) // wait for page to settle
+    // Wait longer for SPA career pages to fully render
+    await humanDelay(4000, 6000)
+
+    // Some career pages use cookie consent — dismiss if present
+    const cookieBtns = document.querySelectorAll('button')
+    for (const btn of cookieBtns) {
+      const t = btn.textContent.trim().toLowerCase()
+      if (t.includes('accept') || t.includes('agree') || t.includes('got it') || t.includes('dismiss') || t.includes('close')) {
+        if (btn.closest('[class*="cookie"], [class*="consent"], [class*="banner"], [id*="cookie"], [id*="consent"]')) {
+          btn.click()
+          await humanDelay(500, 1000)
+          break
+        }
+      }
+    }
 
     // Fill form
     const { filled, total, ats } = await fillForm(resumeData)

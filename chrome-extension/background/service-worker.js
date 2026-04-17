@@ -120,26 +120,42 @@ async function processNextJob() {
   let result
 
   if (isLinkedIn) {
-    // LinkedIn Easy Apply flow — use linkedin-apply.js content script (auto-injected)
+    // LinkedIn flow — content script detects Easy Apply and returns navigate URL or result
     try {
       result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
     } catch (err) {
-      // If Easy Apply fails/not available, try external apply
       result = { status: 'skipped', reason: 'no_easy_apply' }
     }
 
-    // If no Easy Apply, find and click external Apply button → navigate to ATS
+    // Content script says "navigate to apply URL" — do it and re-run
+    if (result.status === 'navigate' && result.url) {
+      await chrome.tabs.update(tab.id, { url: result.url })
+      await waitForTabLoad(tab.id)
+      await new Promise(r => setTimeout(r, 4000))
+
+      // Re-inject content script on new page and retry
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['content/linkedin-apply.js'],
+        })
+        await new Promise(r => setTimeout(r, 1000))
+        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
+      } catch (err) {
+        result = { status: 'failed', reason: 'apply_page_failed: ' + err.message }
+      }
+    }
+
+    // If no Easy Apply, try external apply
     if (result.status === 'skipped' && result.reason === 'no_easy_apply') {
       await addLog('  → No Easy Apply, trying external apply...')
 
-      // Click the external Apply button on LinkedIn
       try {
         const externalUrl = await chrome.tabs.sendMessage(tab.id, { action: 'GET_EXTERNAL_APPLY_URL' })
         if (externalUrl?.url) {
           await chrome.tabs.update(tab.id, { url: externalUrl.url })
           await waitForTabLoad(tab.id)
-          await new Promise(r => setTimeout(r, 3000))
-          // Inject ATS content script and fill form
+          await new Promise(r => setTimeout(r, 4000))
           result = await applyViaATS(tab.id, resumeData)
         }
       } catch {

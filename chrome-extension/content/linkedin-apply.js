@@ -127,27 +127,36 @@ async function verifySubmission() {
 
 async function handleApply() {
   try {
-    // Wait for page to fully load
     await humanDelay(2000, 3000)
 
-    // Step 1: Find Easy Apply
+    // Check if we're already on the /apply/ page (navigated by background)
+    if (window.location.href.includes('/apply')) {
+      const modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 8000)
+      if (modal) return await walkFormSteps(modal)
+      return { status: 'failed', reason: 'modal_not_opened_on_apply_page' }
+    }
+
+    // On job view page — find Easy Apply
     const easyApplyBtn = findEasyApplyButton()
     if (!easyApplyBtn) {
       return { status: 'skipped', reason: 'no_easy_apply' }
     }
 
-    // Step 2: Click Easy Apply
-    easyApplyBtn.click()
-    await humanDelay(2000, 3000)
-
-    // Step 3: Wait for modal
-    const modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 5000)
-    if (!modal) {
-      return { status: 'failed', reason: 'modal_not_opened' }
+    // Extract href for background to navigate
+    const href = easyApplyBtn.getAttribute('href')
+    if (href) {
+      const applyUrl = href.startsWith('http') ? href : `https://www.linkedin.com${href}`
+      return { status: 'navigate', url: applyUrl }
     }
 
-    // Step 4: Walk through form
-    return await walkFormSteps(modal)
+    // Construct apply URL from job page URL
+    const jobUrl = window.location.href.replace(/\/+$/, '')
+    const jobIdMatch = jobUrl.match(/\/jobs\/view\/(\d+)/)
+    if (jobIdMatch) {
+      return { status: 'navigate', url: `https://www.linkedin.com/jobs/view/${jobIdMatch[1]}/apply/?openSDUIApplyFlow=true` }
+    }
+
+    return { status: 'failed', reason: 'no_apply_url' }
   } catch (err) {
     return { status: 'failed', reason: err.message }
   }
