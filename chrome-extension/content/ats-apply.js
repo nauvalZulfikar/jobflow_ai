@@ -255,10 +255,65 @@ async function fillForm(resumeData) {
   return { filled, total, ats }
 }
 
+function getIframeDocument() {
+  // Some career pages embed forms in iframes (Workday, iCIMS, etc.)
+  const iframes = document.querySelectorAll('iframe')
+  for (const iframe of iframes) {
+    try {
+      const doc = iframe.contentDocument || iframe.contentWindow?.document
+      if (doc && doc.querySelector('form, input, button[type="submit"]')) {
+        return doc
+      }
+    } catch {
+      // Cross-origin iframe — can't access
+    }
+  }
+  return null
+}
+
+function isLoginPage() {
+  const url = window.location.href.toLowerCase()
+
+  // DOM-based detection — most reliable signal
+  // Login/register pages have a visible password field + very few other inputs
+  // Apply forms have many inputs (name, email, phone, etc.) + often file upload
+  const hasPasswordField = Array.from(
+    document.querySelectorAll('input[type="password"]')
+  ).some(el => el.offsetParent !== null)
+
+  const hasResumeUpload = !!document.querySelector('input[type="file"]')
+
+  // Count visible non-trivial inputs (exclude password, hidden, submit, button, checkbox, radio, file)
+  const visibleInputCount = Array.from(
+    document.querySelectorAll('input:not([type="hidden"]):not([type="password"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]), textarea')
+  ).filter(el => el.offsetParent !== null).length
+
+  // Password field + few inputs + no file upload → login or registration page
+  // Login: email + password → 1 visible non-password input
+  // Register: name + email + password → 2-3 visible non-password inputs
+  // Apply form: name + email + phone + linkedin + ... → 4+ visible inputs
+  if (hasPasswordField && visibleInputCount <= 3 && !hasResumeUpload) {
+    return true
+  }
+
+  // URL-based fallback for pages that haven't rendered form yet
+  const loginPaths = ['/login', '/signin', '/sign-in', '/log-in', '/users/sign_in', '/account/login', '/masuk']
+  if (loginPaths.some(p => url.includes(p)) && !hasResumeUpload && visibleInputCount <= 3) {
+    return true
+  }
+
+  return false
+}
+
 async function handleATSApply(resumeData) {
   try {
     // Wait longer for SPA career pages to fully render
     await humanDelay(4000, 6000)
+
+    // Check if this is a login/auth page — can't auto-apply
+    if (isLoginPage()) {
+      return { status: 'needs_review', reason: 'login_required' }
+    }
 
     // Some career pages use cookie consent — dismiss if present
     const cookieBtns = document.querySelectorAll('button')
@@ -273,9 +328,40 @@ async function handleATSApply(resumeData) {
       }
     }
 
-    // Fill form
-    const { filled, total, ats } = await fillForm(resumeData)
+    // Fill form on main document
+    let { filled, total, ats } = await fillForm(resumeData)
     console.log(`[Jobflow] Filled ${filled}/${total} fields on ${ats}`)
+
+    // If no fields found, check for iframe-embedded forms
+    if (total === 0) {
+      const iframeDoc = getIframeDocument()
+      if (iframeDoc) {
+        console.log('[Jobflow] Trying iframe form...')
+        // Override document context for form filling in iframe
+        const iframeInputs = iframeDoc.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea')
+        for (const input of iframeInputs) {
+          if (input.offsetParent === null) continue
+          if (input.value && input.value.trim()) continue
+          total++
+          const label = getFieldLabel(input)
+          const key = matchField(label)
+          if (key && resumeData[key]) {
+            const success = await fillField(input, resumeData[key])
+            if (success) filled++
+            await humanDelay(200, 500)
+          }
+        }
+      }
+    }
+
+    // If still no fields, page might need more time (heavy SPA)
+    if (total === 0) {
+      await humanDelay(5000, 8000)
+      const retry = await fillForm(resumeData)
+      filled = retry.filled
+      total = retry.total
+      ats = retry.ats
+    }
 
     // Try multi-page forms — click Next if available
     for (let step = 0; step < 5; step++) {

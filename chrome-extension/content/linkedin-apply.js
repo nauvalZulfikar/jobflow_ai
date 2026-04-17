@@ -185,24 +185,66 @@ async function handleApply(resumeData = {}) {
 }
 
 function getExternalApplyUrl() {
-  // Find the external "Apply" button (not Easy Apply)
-  const links = document.querySelectorAll('a')
+  // Strategy 1: LinkedIn-specific selectors for external apply links
+  const linkedinSelectors = [
+    'a[href*="/jobs/view/externalApply/"]',
+    'a[href*="externalApply"]',
+    '.jobs-apply-button--top-card a[href]',
+    '.jobs-s-apply a[href]',
+    '.job-details-jobs-unified-top-card__container--two-pane a[href]',
+    'a[data-tracking-control-name*="apply"]',
+    'a[data-tracking-control-name="bedrock_apply_external"]',
+  ]
+
+  for (const selector of linkedinSelectors) {
+    const els = document.querySelectorAll(selector)
+    for (const el of els) {
+      if (el.href && !el.textContent.toLowerCase().includes('easy') && el.offsetParent !== null) {
+        return { url: el.href }
+      }
+    }
+  }
+
+  // Strategy 2: Any visible link with apply-like text
+  const links = document.querySelectorAll('a[href]')
   for (const link of links) {
     const text = link.textContent.trim().toLowerCase()
-    if ((text === 'apply' || text.includes('apply now')) && !text.includes('easy') && link.href) {
-      return { url: link.href }
+    if (link.offsetParent !== null && link.href && !text.includes('easy')) {
+      if (text === 'apply' || text.includes('apply now') || text.includes('apply on') ||
+          text.includes('apply to') || text.includes('apply for')) {
+        return { url: link.href }
+      }
     }
   }
-  // Check for "Apply" buttons that open external links
-  const buttons = document.querySelectorAll('button')
+
+  // Strategy 3: Buttons/role elements that trigger navigation (need click to capture URL)
+  const buttons = [...document.querySelectorAll('button, [role="button"], [role="link"]')]
   for (const btn of buttons) {
     const text = btn.textContent.trim().toLowerCase()
-    if ((text === 'apply' || text.includes('apply now')) && !text.includes('easy')) {
-      // Click it and see if it opens a new tab/navigates
-      return { url: null, click: true }
+    if (!text.includes('easy') && btn.offsetParent !== null && !btn.disabled) {
+      if (text === 'apply' || text.includes('apply now') || text.includes('apply on') ||
+          text.includes('apply to') || text.includes('apply for')) {
+        return { url: null, click: true }
+      }
     }
   }
+
   return { url: null }
+}
+
+async function clickApplyButton() {
+  const elements = [...document.querySelectorAll('a, button, [role="button"], [role="link"]')]
+  for (const el of elements) {
+    const text = el.textContent.trim().toLowerCase()
+    if (!text.includes('easy') && el.offsetParent !== null && !el.disabled) {
+      if (text === 'apply' || text.includes('apply now') || text.includes('apply on') ||
+          text.includes('apply to') || text.includes('apply for')) {
+        el.click()
+        return { clicked: true }
+      }
+    }
+  }
+  return { clicked: false }
 }
 
 // Listen for messages from background service worker
@@ -213,6 +255,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === 'GET_EXTERNAL_APPLY_URL') {
     sendResponse(getExternalApplyUrl())
+  }
+  if (message.action === 'CLICK_APPLY_BUTTON') {
+    clickApplyButton().then(sendResponse)
+    return true
   }
   if (message.action === 'PING') {
     sendResponse({ ok: true })

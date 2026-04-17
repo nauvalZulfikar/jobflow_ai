@@ -76,6 +76,27 @@ function waitForTabLoad(tabId, timeout = 25000) {
   })
 }
 
+function waitForNewTab(timeout = 8000) {
+  return new Promise(resolve => {
+    let resolved = false
+    function onCreated(newTab) {
+      if (!resolved) {
+        resolved = true
+        chrome.tabs.onCreated.removeListener(onCreated)
+        resolve(newTab)
+      }
+    }
+    chrome.tabs.onCreated.addListener(onCreated)
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true
+        chrome.tabs.onCreated.removeListener(onCreated)
+        resolve(null)
+      }
+    }, timeout)
+  })
+}
+
 async function processNextJob() {
   const state = await getState()
   if (!state.isRunning) return
@@ -150,6 +171,40 @@ async function processNextJob() {
           await waitForTabLoad(tab.id)
           await new Promise(r => setTimeout(r, 4000))
           result = await applyViaATS(tab.id, resumeData)
+        } else if (externalUrl?.click) {
+          // Button-based apply — click and capture navigation/new tab
+          await addLog('  → Clicking apply button...')
+          const newTabPromise = waitForNewTab(8000)
+          try {
+            await chrome.tabs.sendMessage(tab.id, { action: 'CLICK_APPLY_BUTTON' })
+          } catch {}
+          await new Promise(r => setTimeout(r, 3000))
+
+          // Check if current tab navigated to external site
+          let captured = false
+          try {
+            const currentTab = await chrome.tabs.get(tab.id)
+            if (currentTab.url && !currentTab.url.includes('linkedin.com')) {
+              await waitForTabLoad(tab.id)
+              await new Promise(r => setTimeout(r, 4000))
+              result = await applyViaATS(tab.id, resumeData)
+              captured = true
+            }
+          } catch {}
+
+          if (!captured) {
+            // Check if a new tab was opened
+            const newTab = await newTabPromise
+            if (newTab && newTab.id) {
+              try { chrome.tabs.remove(tab.id) } catch {}
+              tab = newTab
+              await waitForTabLoad(tab.id)
+              await new Promise(r => setTimeout(r, 4000))
+              result = await applyViaATS(tab.id, resumeData)
+            } else {
+              result = { status: 'failed', reason: 'no_apply_option_found' }
+            }
+          }
         } else {
           result = { status: 'failed', reason: 'no_apply_option_found' }
         }
