@@ -121,7 +121,7 @@ async function processNextJob() {
       await new Promise(r => setTimeout(r, 1000))
 
       try {
-        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
+        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB', resumeData: resumeData || {} })
       } catch {
         result = null
       }

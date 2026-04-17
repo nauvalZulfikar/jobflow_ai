@@ -50,6 +50,28 @@ function findEasyApplyButton() {
   return null
 }
 
+async function uploadResume(fileInput, resumeUrl) {
+  if (!resumeUrl || !fileInput) return false
+  try {
+    const response = await fetch(resumeUrl)
+    if (!response.ok) return false
+    const blob = await response.blob()
+    const ext = (resumeUrl.match(/\.(pdf|docx?|rtf)(\?|$)/i)?.[1] || 'pdf').toLowerCase()
+    const mime = ext === 'pdf' ? 'application/pdf'
+      : ext === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      : ext === 'doc' ? 'application/msword'
+      : 'application/octet-stream'
+    const file = new File([blob], `resume.${ext}`, { type: mime })
+    const dt = new DataTransfer()
+    dt.items.add(file)
+    fileInput.files = dt.files
+    fileInput.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  } catch {
+    return false
+  }
+}
+
 function hasRequiredEmptyFields(modal) {
   const inputs = modal.querySelectorAll('input:not([type="hidden"]):not([type="file"]), select, textarea')
   for (const input of inputs) {
@@ -64,7 +86,7 @@ function hasRequiredEmptyFields(modal) {
   return false
 }
 
-async function walkFormSteps(modal) {
+async function walkFormSteps(modal, resumeData = {}) {
   for (let step = 0; step < 10; step++) {
     await humanDelay(1000, 2000)
 
@@ -74,7 +96,11 @@ async function walkFormSteps(modal) {
       // Check if a resume is already attached (LinkedIn sometimes pre-attaches)
       const hasAttachment = modal.querySelector('.jobs-document-upload__container, .jobs-resume-picker__resume-list')
       if (!hasAttachment) {
-        return { status: 'needs_review', reason: 'resume_upload_required' }
+        const uploaded = await uploadResume(fileInput, resumeData.resumeUrl)
+        if (!uploaded) {
+          return { status: 'needs_review', reason: 'resume_upload_required' }
+        }
+        await humanDelay(2000, 4000)
       }
     }
 
@@ -125,14 +151,20 @@ async function verifySubmission() {
   return { status: 'failed', reason: 'no_confirmation' }
 }
 
-async function handleApply() {
+async function handleApply(resumeData = {}) {
   try {
     await humanDelay(1000, 2000)
 
     // We're on /apply/ page — modal should already be open
-    const modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 10000)
+    let modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 20000)
+    if (!modal) {
+      // Retry once — LinkedIn SPA sometimes needs a nudge to render the modal
+      window.scrollBy(0, 300)
+      await humanDelay(1500, 2500)
+      modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 10000)
+    }
     if (modal) {
-      return await walkFormSteps(modal)
+      return await walkFormSteps(modal, resumeData)
     }
 
     // No modal — check if this job even has Easy Apply
@@ -176,7 +208,7 @@ function getExternalApplyUrl() {
 // Listen for messages from background service worker
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'APPLY_TO_JOB') {
-    handleApply().then(sendResponse)
+    handleApply(message.resumeData || {}).then(sendResponse)
     return true
   }
   if (message.action === 'GET_EXTERNAL_APPLY_URL') {
