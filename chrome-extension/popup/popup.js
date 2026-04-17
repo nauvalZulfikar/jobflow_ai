@@ -52,10 +52,11 @@ function updateUI() {
     $('stat-skipped').textContent = results.skipped || 0
     $('stat-failed').textContent = results.failed || 0
 
-    // Logs
+    // Logs — only auto-scroll if user is already at bottom
     const logsEl = $('logs')
+    const wasAtBottom = logsEl.scrollTop + logsEl.clientHeight >= logsEl.scrollHeight - 10
     logsEl.textContent = logs.join('\n')
-    logsEl.scrollTop = logsEl.scrollHeight
+    if (wasAtBottom) logsEl.scrollTop = logsEl.scrollHeight
   })
 }
 
