@@ -103,83 +103,81 @@ async function processNextJob() {
   }
 
   const isLinkedIn = applyUrl.includes('linkedin.com')
+  let tab, result
 
-  // Open job page
-  let tab
   try {
-    tab = await chrome.tabs.create({ url: applyUrl, active: false })
-  } catch (err) {
-    await addLog(`  ❌ Failed to open tab: ${err.message}`)
-    results.failed++
-    await setState({ currentIndex: currentIndex + 1, results })
-    scheduleNext()
-    return
-  }
-
-  await waitForTabLoad(tab.id)
-  await new Promise(r => setTimeout(r, 3000))
-
-  let result
-
-  if (isLinkedIn) {
-    // LinkedIn flow — content script detects Easy Apply and returns navigate URL or result
-    try {
-      result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
-    } catch (err) {
-      result = { status: 'skipped', reason: 'no_easy_apply' }
-    }
-
-    // Content script says "navigate to apply URL" — do it and re-run
-    if (result.status === 'navigate' && result.url) {
-      await chrome.tabs.update(tab.id, { url: result.url })
+    if (isLinkedIn) {
+      // STEP 1: Open directly to /apply/ URL (skip job view page)
+      const applyPageUrl = applyUrl.replace(/\/+$/, '') + '/apply/?openSDUIApplyFlow=true'
+      tab = await chrome.tabs.create({ url: applyPageUrl, active: false })
       await waitForTabLoad(tab.id)
       await new Promise(r => setTimeout(r, 4000))
 
-      // Re-inject content script on new page and retry
+      // Inject content script and try Easy Apply
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/linkedin-apply.js'],
+      })
+      await new Promise(r => setTimeout(r, 1000))
+
       try {
+        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
+      } catch {
+        result = null
+      }
+
+      // If Easy Apply failed or no modal, try the job view page for external apply
+      if (!result || result.status === 'failed' || result.status === 'skipped') {
+        await addLog('  → No Easy Apply, trying external apply...')
+        await chrome.tabs.update(tab.id, { url: applyUrl })
+        await waitForTabLoad(tab.id)
+        await new Promise(r => setTimeout(r, 4000))
+
+        // Find external apply URL from job page
         await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           files: ['content/linkedin-apply.js'],
         })
         await new Promise(r => setTimeout(r, 1000))
-        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB' })
-      } catch (err) {
-        result = { status: 'failed', reason: 'apply_page_failed: ' + err.message }
-      }
-    }
 
-    // If no Easy Apply, try external apply
-    if (result.status === 'skipped' && result.reason === 'no_easy_apply') {
-      await addLog('  → No Easy Apply, trying external apply...')
+        let externalUrl
+        try {
+          externalUrl = await chrome.tabs.sendMessage(tab.id, { action: 'GET_EXTERNAL_APPLY_URL' })
+        } catch {}
 
-      try {
-        const externalUrl = await chrome.tabs.sendMessage(tab.id, { action: 'GET_EXTERNAL_APPLY_URL' })
         if (externalUrl?.url) {
           await chrome.tabs.update(tab.id, { url: externalUrl.url })
           await waitForTabLoad(tab.id)
           await new Promise(r => setTimeout(r, 4000))
           result = await applyViaATS(tab.id, resumeData)
+        } else {
+          result = { status: 'failed', reason: 'no_apply_option_found' }
         }
-      } catch {
-        result = { status: 'failed', reason: 'external_apply_failed' }
       }
+    } else {
+      // External ATS page directly
+      tab = await chrome.tabs.create({ url: applyUrl, active: false })
+      await waitForTabLoad(tab.id)
+      await new Promise(r => setTimeout(r, 4000))
+      result = await applyViaATS(tab.id, resumeData)
     }
-  } else {
-    // Direct ATS page — inject and fill
-    result = await applyViaATS(tab.id, resumeData)
+  } catch (err) {
+    result = { status: 'failed', reason: err.message || 'unknown_error' }
   }
 
   // Close tab
-  try { chrome.tabs.remove(tab.id) } catch {}
+  try { if (tab) chrome.tabs.remove(tab.id) } catch {}
 
   // Process result
+  if (!result) result = { status: 'failed', reason: 'no_response' }
+
   if (result.status === 'applied') {
     await updateStatus(app.id, 'applied')
     results.applied++
     await addLog(`  ✅ Applied${result.reason ? ` (${result.reason})` : ''}`)
   } else if (result.status === 'needs_review') {
     results.skipped++
-    await addLog(`  ⏭ Needs review: ${result.reason}`)
+    await addLog(`  ⏭ Needs review: ${result.reason || 'unknown'}`)
   } else {
     results.failed++
     await addLog(`  ❌ Failed: ${result.reason}`)

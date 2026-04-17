@@ -127,38 +127,28 @@ async function verifySubmission() {
 
 async function handleApply() {
   try {
-    await humanDelay(2000, 3000)
+    await humanDelay(1000, 2000)
 
-    // Check if we're already on the /apply/ page (navigated by background)
-    if (window.location.href.includes('/apply')) {
-      const modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 8000)
-      if (modal) return await walkFormSteps(modal)
-      return { status: 'failed', reason: 'modal_not_opened_on_apply_page' }
+    // We're on /apply/ page — modal should already be open
+    const modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 10000)
+    if (modal) {
+      return await walkFormSteps(modal)
     }
 
-    // On job view page — find Easy Apply
-    const easyApplyBtn = findEasyApplyButton()
-    if (!easyApplyBtn) {
-      return { status: 'skipped', reason: 'no_easy_apply' }
+    // No modal — check if this job even has Easy Apply
+    const body = document.body.innerText.toLowerCase()
+    if (body.includes('already applied') || body.includes('you applied')) {
+      return { status: 'applied', reason: 'already_applied' }
     }
 
-    // Extract href for background to navigate
-    const href = easyApplyBtn.getAttribute('href')
-    if (href) {
-      const applyUrl = href.startsWith('http') ? href : `https://www.linkedin.com${href}`
-      return { status: 'navigate', url: applyUrl }
+    // Check if page shows "Application submitted" (redirected after auto-submit)
+    if (body.includes('application submitted') || body.includes('application was sent')) {
+      return { status: 'applied', reason: 'already_submitted' }
     }
 
-    // Construct apply URL from job page URL
-    const jobUrl = window.location.href.replace(/\/+$/, '')
-    const jobIdMatch = jobUrl.match(/\/jobs\/view\/(\d+)/)
-    if (jobIdMatch) {
-      return { status: 'navigate', url: `https://www.linkedin.com/jobs/view/${jobIdMatch[1]}/apply/?openSDUIApplyFlow=true` }
-    }
-
-    return { status: 'failed', reason: 'no_apply_url' }
+    return { status: 'failed', reason: 'no_easy_apply_modal' }
   } catch (err) {
-    return { status: 'failed', reason: err.message }
+    return { status: 'failed', reason: err.message || 'unknown' }
   }
 }
 
