@@ -23,6 +23,8 @@ async function addLog(msg) {
 }
 
 async function startAutoApply() {
+  // Clear logs from previous run
+  await setState({ logs: [] })
   await addLog('Fetching applications & resume...')
 
   let applications, resumeData
