@@ -176,9 +176,11 @@ async function processNextJob() {
     results.applied++
     await addLog(`  ✅ Applied${result.reason ? ` (${result.reason})` : ''}`)
   } else if (result.status === 'needs_review') {
+    await updateStatus(app.id, 'saved', `[auto-apply skip] ${result.reason || 'unknown'}`)
     results.skipped++
     await addLog(`  ⏭ Needs review: ${result.reason || 'unknown'}`)
   } else {
+    await updateStatus(app.id, 'saved', `[auto-apply error] ${result.reason || 'unknown'}`)
     results.failed++
     await addLog(`  ❌ Failed: ${result.reason}`)
   }
