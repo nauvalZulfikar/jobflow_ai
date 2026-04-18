@@ -1,5 +1,18 @@
 import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, detectFormViaVision } from '../lib/api-client.js'
 
+// Global error handlers — capture crash errors before service worker dies
+self.addEventListener('error', (event) => {
+  const error = `${event.message} at ${event.filename}:${event.lineno}:${event.colno}`
+  chrome.storage.session.set({ lastCrashError: { error, stack: event.error?.stack || '', timestamp: Date.now() } })
+})
+
+self.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason
+  const error = reason instanceof Error ? reason.message : String(reason)
+  const stack = reason instanceof Error ? reason.stack || '' : ''
+  chrome.storage.session.set({ lastCrashError: { error, stack, timestamp: Date.now() } })
+})
+
 const JOB_DELAY_MIN = 30000
 const JOB_DELAY_MAX = 90000
 const MAX_RETRIES = 3
@@ -129,6 +142,19 @@ function waitForNewTab(timeout = 8000) {
 }
 
 async function processNextJob() {
+  try {
+    await _processNextJob()
+  } catch (err) {
+    const error = err.message || String(err)
+    const stack = err.stack || ''
+    chrome.storage.session.set({ lastCrashError: { error, stack, timestamp: Date.now() } })
+    await addLog(`💥 Uncaught error: ${error}`)
+    // Let crash recovery handle it
+    throw err
+  }
+}
+
+async function _processNextJob() {
   const state = await getState()
   if (!state.isRunning) return
 
@@ -317,6 +343,8 @@ async function processNextJob() {
         currentIndex: currentIndex + 1,
         results,
         retryQueueMeta: retryQueue.map(a => ({ id: a.id, retryCount: a._retryCount })),
+        crashCount: 0,
+        lastCrashIndex: -1,
         timestamp: Date.now(),
       }
     })
@@ -397,17 +425,67 @@ chrome.alarms.onAlarm.addListener(alarm => {
 })
 
 // Crash recovery: check if there's an interrupted session on startup
+const MAX_CRASHES_PER_JOB = 2
+
 async function checkCrashRecovery() {
   const state = await getState()
   if (state.isRunning) {
     // Service worker restarted while running — this means a crash happened
     await addLog('⚠️ Recovered from crash. Checking checkpoint...')
     try {
+      // Show the error that caused the crash
+      const { lastCrashError } = await chrome.storage.session.get('lastCrashError')
+      if (lastCrashError) {
+        await addLog(`💥 Crash error: ${lastCrashError.error}`)
+        if (lastCrashError.stack) {
+          // Log first 2 lines of stack trace
+          const stackLines = lastCrashError.stack.split('\n').slice(0, 3).join(' | ')
+          await addLog(`   Stack: ${stackLines}`)
+        }
+        chrome.storage.session.remove('lastCrashError')
+      }
       const { checkpoint } = await chrome.storage.session.get('checkpoint')
       if (checkpoint && (Date.now() - checkpoint.timestamp) < 30 * 60 * 1000) {
-        // Checkpoint is less than 30 min old — resume from where we left off
+        // Track how many times we've crashed on the same job index
+        const crashCount = (checkpoint.crashCount || 0) + 1
+        const isSameJob = checkpoint.lastCrashIndex === checkpoint.currentIndex
+
+        if (isSameJob && crashCount >= MAX_CRASHES_PER_JOB) {
+          // This job keeps crashing — skip it
+          const { queue = [] } = state
+          const skippedJob = queue[checkpoint.currentIndex]
+          const jobTitle = skippedJob?.job?.title || 'Unknown'
+          const crashError = lastCrashError?.error || 'unknown'
+          await addLog(`⏭ Skipping "${jobTitle}" — crashed ${crashCount}x: ${crashError}`)
+
+          const results = checkpoint.results || { applied: 0, skipped: 0, failed: 0 }
+          results.failed++
+
+          if (skippedJob?.id) {
+            await updateStatus(skippedJob.id, 'saved', `[auto-apply error] repeated_crash (${crashCount}x): ${crashError}`)
+          }
+
+          const nextIndex = checkpoint.currentIndex + 1
+          await setState({ currentIndex: nextIndex, results })
+          // Update checkpoint so next crash doesn't re-count
+          chrome.storage.session.set({
+            checkpoint: { currentIndex: nextIndex, results, crashCount: 0, lastCrashIndex: -1, timestamp: Date.now() }
+          })
+          processNextJob()
+          return
+        }
+
+        // Resume from checkpoint, but record crash count
         await addLog(`🔄 Resuming from job ${checkpoint.currentIndex + 1}...`)
         await setState({ currentIndex: checkpoint.currentIndex, results: checkpoint.results })
+        chrome.storage.session.set({
+          checkpoint: {
+            ...checkpoint,
+            crashCount: isSameJob ? crashCount : 1,
+            lastCrashIndex: checkpoint.currentIndex,
+            timestamp: Date.now(),
+          }
+        })
         processNextJob()
         return
       }
