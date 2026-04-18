@@ -46,15 +46,31 @@ async function setState(updates) {
   await chrome.storage.local.set(updates)
 }
 
+let sessionStartTime = null
+
+function formatRuntime(ms) {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  const rs = s % 60
+  if (m < 60) return `${m}m${rs}s`
+  const h = Math.floor(m / 60)
+  const rm = m % 60
+  return `${h}h${rm}m${rs}s`
+}
+
 async function addLog(msg) {
   const { logs = [] } = await chrome.storage.local.get('logs')
-  logs.push(`[${new Date().toLocaleTimeString('id-ID')}] ${msg}`)
+  const time = new Date().toLocaleTimeString('id-ID')
+  const runtime = sessionStartTime ? ` +${formatRuntime(Date.now() - sessionStartTime)}` : ''
+  logs.push(`[${time}${runtime}] ${msg}`)
   if (logs.length > 50) logs.splice(0, logs.length - 50)
   await setState({ logs })
 }
 
 async function startAutoApply() {
   // Clear logs from previous run
+  sessionStartTime = Date.now()
   await setState({ logs: [] })
   await addLog('Fetching applications & resume...')
 
@@ -345,6 +361,7 @@ async function _processNextJob() {
         retryQueueMeta: retryQueue.map(a => ({ id: a.id, retryCount: a._retryCount })),
         crashCount: 0,
         lastCrashIndex: -1,
+        sessionStartTime,
         timestamp: Date.now(),
       }
     })
@@ -431,6 +448,11 @@ async function checkCrashRecovery() {
   const state = await getState()
   if (state.isRunning) {
     // Service worker restarted while running — this means a crash happened
+    // Restore session start time from checkpoint if available
+    try {
+      const { checkpoint: cp } = await chrome.storage.session.get('checkpoint')
+      sessionStartTime = cp?.sessionStartTime || Date.now()
+    } catch { sessionStartTime = Date.now() }
     await addLog('⚠️ Recovered from crash. Checking checkpoint...')
     try {
       // Show the error that caused the crash
@@ -469,7 +491,7 @@ async function checkCrashRecovery() {
           await setState({ currentIndex: nextIndex, results })
           // Update checkpoint so next crash doesn't re-count
           chrome.storage.session.set({
-            checkpoint: { currentIndex: nextIndex, results, crashCount: 0, lastCrashIndex: -1, timestamp: Date.now() }
+            checkpoint: { currentIndex: nextIndex, results, crashCount: 0, lastCrashIndex: -1, sessionStartTime, timestamp: Date.now() }
           })
           processNextJob()
           return
