@@ -6,6 +6,7 @@ export class BrowserBase {
   async launchBrowser(): Promise<void> {
     this.browser = await chromium.launch({
       headless: process.env.PLAYWRIGHT_HEADLESS !== 'false',
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',

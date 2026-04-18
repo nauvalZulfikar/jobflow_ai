@@ -12,6 +12,7 @@ services:
       REDIS_PORT: 6379
       NODE_ENV: production
       PORT: 3003
+      PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
     depends_on:
       - scraper
     ports:
@@ -19,7 +20,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
     networks:
       - default
       - shared
