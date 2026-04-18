@@ -98,24 +98,12 @@ export async function detectFormViaVision(screenshotBase64, pageUrl) {
 }
 
 export async function checkLinkedInSession() {
+  // Service worker can't use credentials:include — use chrome.cookies API instead
   try {
-    const res = await fetch('https://www.linkedin.com/voyager/api/me', {
-      credentials: 'include',
-      headers: { 'csrf-token': 'ajax:0' },
-    })
-    return res.status === 200
+    const cookie = await chrome.cookies.get({ url: 'https://www.linkedin.com', name: 'li_at' })
+    return !!cookie && !!cookie.value
   } catch {
-    // Fallback: try loading feed page and check for login redirect
-    try {
-      const res = await fetch('https://www.linkedin.com/feed/', {
-        credentials: 'include',
-        redirect: 'manual',
-      })
-      // 200 = logged in, 3xx = redirect to login
-      return res.status === 200 || res.type === 'opaqueredirect'
-    } catch {
-      return false
-    }
+    return false
   }
 }
 

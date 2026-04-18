@@ -3,7 +3,7 @@
   "name": "Jobflow Auto-Apply",
   "version": "1.3.0",
   "description": "Auto-apply ke semua job — LinkedIn Easy Apply + external ATS",
-  "permissions": ["tabs", "activeTab", "storage", "alarms", "scripting"],
+  "permissions": ["tabs", "activeTab", "storage", "alarms", "scripting", "cookies"],
   "host_permissions": ["https://*/*", "http://*/*"],
   "background": {
     "service_worker": "background/service-worker.js",
