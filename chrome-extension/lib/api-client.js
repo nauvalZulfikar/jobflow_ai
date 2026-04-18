@@ -107,6 +107,52 @@ export async function checkLinkedInSession() {
   }
 }
 
+export async function triggerServerAutoApply(applicationId) {
+  const token = await getToken()
+  const res = await fetch(`${API_BASE}/applications/${applicationId}/auto-apply`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+  })
+  const json = await res.json()
+  return json // { success, data: { sessionId, status } }
+}
+
+export async function pollAutoApplyStatus(applicationId, maxWaitMs = 120000) {
+  const token = await getToken()
+  const start = Date.now()
+  const pollInterval = 5000
+
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const res = await fetch(`${API_BASE}/applications/${applicationId}/auto-apply/status`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+      })
+      const json = await res.json()
+      if (!json.success) return { status: 'failed', reason: json.error?.message || 'unknown' }
+
+      const session = json.data
+      if (session.status === 'submitted') {
+        return { status: 'applied', reason: 'server_auto_apply' }
+      }
+      if (session.status === 'failed') {
+        return { status: 'failed', reason: session.failureReason || 'server_failed' }
+      }
+      if (session.status === 'skipped') {
+        return { status: 'needs_review', reason: 'server_skipped' }
+      }
+      // Still processing (approved, submitting, detecting) — keep polling
+    } catch {
+      // Network error — keep trying
+    }
+    await new Promise(r => setTimeout(r, pollInterval))
+  }
+
+  return { status: 'failed', reason: 'server_timeout' }
+}
+
 export async function updateStatus(applicationId, status, notes) {
   const token = await getToken()
   const body = { status }

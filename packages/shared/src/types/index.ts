@@ -232,9 +232,11 @@ export type AutoApplyJobData = {
   userId: string
   jobId: string
   siteUrl: string
-  source: 'linkedin' | 'indeed' | 'jobstreet'
+  source: string
   answers: FormAnswer[]
   resumeFileUrl?: string
+  resumeContent?: ResumeContent
+  jobDescription?: string
 }
 
 // ========== Scraper Types ==========

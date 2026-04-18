@@ -1,4 +1,4 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, detectFormViaVision } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus } from '../lib/api-client.js'
 
 // Global error handlers — capture crash errors before service worker dies
 self.addEventListener('error', (event) => {
@@ -123,39 +123,6 @@ async function stopAutoApply() {
   await addLog('Stopped by user')
 }
 
-function waitForTabLoad(tabId, timeout = 25000) {
-  return new Promise(resolve => {
-    function onUpdate(tid, info) {
-      if (tid === tabId && info.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(onUpdate)
-        resolve(true)
-      }
-    }
-    chrome.tabs.onUpdated.addListener(onUpdate)
-    setTimeout(() => { chrome.tabs.onUpdated.removeListener(onUpdate); resolve(false) }, timeout)
-  })
-}
-
-function waitForNewTab(timeout = 8000) {
-  return new Promise(resolve => {
-    let resolved = false
-    function onCreated(newTab) {
-      if (!resolved) {
-        resolved = true
-        chrome.tabs.onCreated.removeListener(onCreated)
-        resolve(newTab)
-      }
-    }
-    chrome.tabs.onCreated.addListener(onCreated)
-    setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        chrome.tabs.onCreated.removeListener(onCreated)
-        resolve(null)
-      }
-    }, timeout)
-  })
-}
 
 async function processNextJob() {
   try {
@@ -214,105 +181,23 @@ async function _processNextJob() {
     return
   }
 
-  const isLinkedIn = applyUrl.includes('linkedin.com')
-  let tab, result
+  let result
 
   try {
-    if (isLinkedIn) {
-      // STEP 1: Open directly to /apply/ URL (skip job view page)
-      const applyPageUrl = applyUrl.replace(/\/+$/, '') + '/apply/?openSDUIApplyFlow=true'
-      tab = await chrome.tabs.create({ url: applyPageUrl, active: false })
-      await waitForTabLoad(tab.id)
-      await new Promise(r => setTimeout(r, 4000))
+    // Delegate to server-side GenericAI auto-apply
+    await addLog('  → Sending to server auto-apply...')
+    const triggerRes = await triggerServerAutoApply(app.id)
 
-      // Inject content script and try Easy Apply
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content/linkedin-apply.js'],
-      })
-      await new Promise(r => setTimeout(r, 1000))
-
-      try {
-        result = await chrome.tabs.sendMessage(tab.id, { action: 'APPLY_TO_JOB', resumeData: resumeData || {} })
-      } catch {
-        result = null
-      }
-
-      // If Easy Apply failed or no modal, try the job view page for external apply
-      if (!result || result.status === 'failed' || result.status === 'skipped') {
-        await addLog('  → No Easy Apply, trying external apply...')
-        await chrome.tabs.update(tab.id, { url: applyUrl })
-        await waitForTabLoad(tab.id)
-        await new Promise(r => setTimeout(r, 4000))
-
-        // Find external apply URL from job page
-        await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
-          files: ['content/linkedin-apply.js'],
-        })
-        await new Promise(r => setTimeout(r, 1000))
-
-        let externalUrl
-        try {
-          externalUrl = await chrome.tabs.sendMessage(tab.id, { action: 'GET_EXTERNAL_APPLY_URL' })
-        } catch {}
-
-        if (externalUrl?.url) {
-          await chrome.tabs.update(tab.id, { url: externalUrl.url })
-          await waitForTabLoad(tab.id)
-          await new Promise(r => setTimeout(r, 4000))
-          result = await applyViaATS(tab.id, resumeData)
-        } else if (externalUrl?.click) {
-          // Button-based apply — click and capture navigation/new tab
-          await addLog('  → Clicking apply button...')
-          const newTabPromise = waitForNewTab(8000)
-          try {
-            await chrome.tabs.sendMessage(tab.id, { action: 'CLICK_APPLY_BUTTON' })
-          } catch {}
-          await new Promise(r => setTimeout(r, 3000))
-
-          // Check if current tab navigated to external site
-          let captured = false
-          try {
-            const currentTab = await chrome.tabs.get(tab.id)
-            if (currentTab.url && !currentTab.url.includes('linkedin.com')) {
-              await waitForTabLoad(tab.id)
-              await new Promise(r => setTimeout(r, 4000))
-              result = await applyViaATS(tab.id, resumeData)
-              captured = true
-            }
-          } catch {}
-
-          if (!captured) {
-            // Check if a new tab was opened
-            const newTab = await newTabPromise
-            if (newTab && newTab.id) {
-              try { chrome.tabs.remove(tab.id) } catch {}
-              tab = newTab
-              await waitForTabLoad(tab.id)
-              await new Promise(r => setTimeout(r, 4000))
-              result = await applyViaATS(tab.id, resumeData)
-            } else {
-              result = { status: 'failed', reason: 'no_apply_option_found' }
-            }
-          }
-        } else {
-          result = { status: 'failed', reason: 'no_apply_option_found' }
-        }
-      }
+    if (!triggerRes.success) {
+      const errMsg = triggerRes.error?.message || 'server_trigger_failed'
+      result = { status: 'failed', reason: errMsg }
     } else {
-      // External ATS page directly
-      tab = await chrome.tabs.create({ url: applyUrl, active: false })
-      await waitForTabLoad(tab.id)
-      await new Promise(r => setTimeout(r, 4000))
-      result = await applyViaATS(tab.id, resumeData)
+      await addLog('  → Server processing... polling status')
+      result = await pollAutoApplyStatus(app.id, 120000)
     }
   } catch (err) {
     result = { status: 'failed', reason: err.message || 'unknown_error' }
   }
-
-  // Close tab
-  try { if (tab) chrome.tabs.remove(tab.id) } catch {}
 
   // Process result
   if (!result) result = { status: 'failed', reason: 'no_response' }
@@ -370,65 +255,6 @@ async function _processNextJob() {
   scheduleNext()
 }
 
-async function captureScreenshot(tabId) {
-  try {
-    // Capture visible tab as base64 PNG
-    const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' })
-    return dataUrl.replace(/^data:image\/png;base64,/, '')
-  } catch {
-    return null
-  }
-}
-
-async function applyViaATS(tabId, resumeData) {
-  try {
-    // Inject the ATS content script
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: ['content/ats-apply.js'],
-    })
-    await new Promise(r => setTimeout(r, 1000))
-
-    // Send resume data and trigger form fill + submit
-    const result = await chrome.tabs.sendMessage(tabId, {
-      action: 'ATS_APPLY',
-      resumeData: resumeData || {},
-    })
-
-    // Fix 5: Vision fallback — if ATS handler couldn't find submit button
-    if (result && result.status === 'needs_review' && result.reason?.includes('no submit button')) {
-      await addLog('  🔍 Vision fallback: analyzing page screenshot...')
-      const screenshot = await captureScreenshot(tabId)
-      if (screenshot) {
-        const tab = await chrome.tabs.get(tabId)
-        const visionResult = await detectFormViaVision(screenshot, tab.url)
-        if (visionResult?.submitSelector) {
-          await addLog(`  🎯 Vision found submit: ${visionResult.submitSelector}`)
-          // Try clicking the AI-detected submit button
-          try {
-            const clickResult = await chrome.scripting.executeScript({
-              target: { tabId },
-              func: (selector) => {
-                const btn = document.querySelector(selector)
-                if (btn) { btn.click(); return true }
-                return false
-              },
-              args: [visionResult.submitSelector],
-            })
-            if (clickResult?.[0]?.result) {
-              await new Promise(r => setTimeout(r, 4000))
-              return { status: 'applied', reason: 'vision_fallback_submit' }
-            }
-          } catch {}
-        }
-      }
-    }
-
-    return result || { status: 'failed', reason: 'no_response' }
-  } catch (err) {
-    return { status: 'failed', reason: `ats_inject_failed: ${err.message}` }
-  }
-}
 
 function scheduleNext() {
   const delay = randomDelay()

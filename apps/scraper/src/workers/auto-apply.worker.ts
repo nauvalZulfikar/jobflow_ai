@@ -3,9 +3,7 @@ import { prisma } from '@jobflow/db'
 import type { AutoApplyJobData } from '@jobflow/shared'
 import { createRedisConnection } from '../queues/index.js'
 import { AUTO_APPLY_QUEUE_NAME } from '../queues/auto-apply-queue.js'
-import { IndeedApplier } from '../appliers/indeed.applier.js'
-import { JobStreetApplier } from '../appliers/jobstreet.applier.js'
-import { LinkedInApplier } from '../appliers/linkedin.applier.js'
+import { GenericAIApplier } from '../appliers/generic-ai.applier.js'
 
 async function addLog(sessionId: string, level: string, step: string, message: string) {
   await prisma.autoApplyLog.create({ data: { sessionId, level, step, message } })
@@ -16,26 +14,37 @@ export function startAutoApplyWorker() {
     AUTO_APPLY_QUEUE_NAME,
     async (job) => {
       const { sessionId, applicationId, source, siteUrl, answers, resumeFileUrl, userId } = job.data
+      const jobData = job.data as AutoApplyJobData & { resumeContent?: any; jobDescription?: string }
 
       await prisma.autoApplySession.update({ where: { id: sessionId }, data: { status: 'submitting' } })
-      await addLog(sessionId, 'info', 'submit', `Starting ${source} submission`)
+      await addLog(sessionId, 'info', 'submit', `Starting ${source} submission via GenericAI`)
 
-      // Select applier
-      let applier
-      if (source === 'indeed') {
-        applier = new IndeedApplier()
-      } else if (source === 'jobstreet') {
-        applier = new JobStreetApplier()
-      } else if (source === 'linkedin') {
+      // Build GenericAI applier
+      let linkedInCookie: string | undefined
+      if (source === 'linkedin') {
         const integration = await prisma.userIntegration.findFirst({
           where: { userId, provider: 'linkedin' },
         })
-        applier = new LinkedInApplier(integration?.accessToken)
-      } else {
-        throw new Error(`Unsupported source: ${source}`)
+        linkedInCookie = integration?.accessToken
       }
 
-      await addLog(sessionId, 'info', 'submit', `Applier ready, navigating to ${siteUrl}`)
+      const applier = new GenericAIApplier({ linkedInCookie })
+
+      // Set resume context for AI planning
+      if (jobData.resumeContent && jobData.jobDescription) {
+        applier.setContext(jobData.resumeContent, jobData.jobDescription)
+      } else {
+        // Fallback: fetch from DB
+        const application = await prisma.jobApplication.findUnique({
+          where: { id: applicationId },
+          include: { resume: true, job: true },
+        })
+        if (application?.resume?.content && application?.job?.description) {
+          applier.setContext(application.resume.content as any, application.job.description)
+        }
+      }
+
+      await addLog(sessionId, 'info', 'submit', `Navigating to ${siteUrl}`)
 
       const result = await applier.apply(siteUrl, answers, resumeFileUrl)
 

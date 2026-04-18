@@ -3,12 +3,10 @@ import { prisma } from '@jobflow/db'
 import { generateFormAnswers, openai, AI_MODEL } from '@jobflow/ai'
 import { success, failure } from '@jobflow/shared'
 import { autoApplyQueue } from '../plugins/auto-apply-queue.js'
-import { IndeedApplier } from '../appliers/indeed.applier.js'
-import { JobStreetApplier } from '../appliers/jobstreet.applier.js'
-import { LinkedInApplier } from '../appliers/linkedin.applier.js'
+import { GenericAIApplier } from '../appliers/generic-ai.applier.js'
 import type { ResumeContent } from '@jobflow/shared'
 
-const SUPPORTED_SOURCES = ['indeed', 'jobstreet', 'linkedin'] as const
+const SUPPORTED_SOURCES = ['indeed', 'jobstreet', 'linkedin', 'glassdoor', 'kalibrr', 'techinasia', 'manual'] as const
 type SupportedSource = (typeof SUPPORTED_SOURCES)[number]
 
 export async function autoApplyRoutes(app: FastifyInstance) {
@@ -43,13 +41,9 @@ export async function autoApplyRoutes(app: FastifyInstance) {
         )
       }
 
-      // Build applier
-      let applier
-      if (source === 'indeed') {
-        applier = new IndeedApplier()
-      } else if (source === 'jobstreet') {
-        applier = new JobStreetApplier()
-      } else {
+      // Build GenericAI applier — works for all sources
+      let linkedInCookie: string | undefined
+      if (source === 'linkedin') {
         const integration = await prisma.userIntegration.findFirst({
           where: { userId: user.id, provider: 'linkedin' },
         })
@@ -58,8 +52,12 @@ export async function autoApplyRoutes(app: FastifyInstance) {
             failure('REQUIRES_AUTH', 'Hubungkan akun LinkedIn di Pengaturan > Integrasi')
           )
         }
-        applier = new LinkedInApplier(integration.accessToken)
+        linkedInCookie = integration.accessToken
       }
+
+      const applier = new GenericAIApplier({ linkedInCookie })
+      const resumeContent = application.resume.content as ResumeContent
+      applier.setContext(resumeContent, application.job.description)
 
       // Detect fields via Playwright
       let detectedFields
@@ -68,11 +66,6 @@ export async function autoApplyRoutes(app: FastifyInstance) {
       } catch (e: any) {
         if (e.message === 'requires_auth') {
           return reply.status(403).send(failure('REQUIRES_AUTH', 'Login diperlukan untuk platform ini'))
-        }
-        if (e.message === 'external_ats') {
-          return reply.status(400).send(
-            failure('EXTERNAL_ATS', 'Lowongan ini mengarah ke situs eksternal yang belum didukung')
-          )
         }
         throw e
       }
@@ -117,6 +110,8 @@ export async function autoApplyRoutes(app: FastifyInstance) {
         source: source as SupportedSource,
         answers,
         resumeFileUrl: application.resume.fileUrl ?? undefined,
+        resumeContent: resumeContent,
+        jobDescription: application.job.description,
       } as never)
 
       return reply.send(success({ sessionId: session.id, jobId: bullJob.id, status: 'queued' }))
