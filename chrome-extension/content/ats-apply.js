@@ -5,6 +5,23 @@ function humanDelay(min = 500, max = 1500) {
   return new Promise(r => setTimeout(r, Math.floor(Math.random() * (max - min + 1)) + min))
 }
 
+// Adaptive timeouts per ATS platform — slow platforms get more time
+const PLATFORM_TIMEOUTS = {
+  workday: { element: 15000, form: 12000, settle: 5000, extraWait: 12000 },
+  icims: { element: 12000, form: 10000, settle: 3000, extraWait: 8000 },
+  smartrecruiters: { element: 10000, form: 8000, settle: 2000, extraWait: 6000 },
+  ashby: { element: 10000, form: 8000, settle: 2000, extraWait: 6000 },
+  greenhouse: { element: 8000, form: 6000, settle: 1500, extraWait: 5000 },
+  lever: { element: 8000, form: 6000, settle: 1500, extraWait: 5000 },
+  bamboohr: { element: 8000, form: 6000, settle: 1500, extraWait: 5000 },
+  recruitee: { element: 8000, form: 6000, settle: 1500, extraWait: 5000 },
+  generic: { element: 8000, form: 5000, settle: 2000, extraWait: 5000 },
+}
+
+function getTimeouts(ats) {
+  return PLATFORM_TIMEOUTS[ats] || PLATFORM_TIMEOUTS.generic
+}
+
 function waitForElement(selector, timeout = 8000) {
   return new Promise(resolve => {
     const el = document.querySelector(selector)
@@ -85,18 +102,74 @@ function matchField(label) {
   return null
 }
 
+// Platform-specific configurations for top ATS platforms
+const ATS_CONFIGS = {
+  greenhouse: {
+    detect: (url, html) => url.includes('greenhouse.io') || url.includes('boards.greenhouse') || html.includes('greenhouse'),
+    formSelector: '#application-form, #application_form, form[action*="greenhouse"]',
+    submitSelector: 'input[type="submit"][value*="Submit"], button[type="submit"], #submit_app, button[data-testid="submit-application"]',
+    resumeSelector: 'input[type="file"]#resume, input[type="file"][name*="resume"], input[type="file"]:first-of-type',
+    waitForForm: 3000,
+  },
+  lever: {
+    detect: (url, html) => url.includes('lever.co') || url.includes('jobs.lever') || html.includes('lever-'),
+    formSelector: '.application-form, .postings-btn-wrapper, form[action*="lever"]',
+    submitSelector: 'button.postings-btn[type="submit"], button[type="submit"], .postings-btn-wrapper button',
+    resumeSelector: 'input[type="file"][name="resume"], input[type="file"]',
+    waitForForm: 3000,
+  },
+  workday: {
+    detect: (url, html) => url.includes('myworkdayjobs.com') || url.includes('workday.com') || html.includes('workday'),
+    formSelector: 'div[data-automation-id="jobApplication"], div[data-automation-id="applyManually"], form[data-automation-id]',
+    submitSelector: 'button[data-automation-id="bottom-navigation-next-button"], button[data-automation-id="submit"], button[aria-label="Submit"]',
+    resumeSelector: 'input[data-automation-id="file-upload-input-ref"], input[type="file"]',
+    waitForForm: 8000, // Workday is notoriously slow
+  },
+  icims: {
+    detect: (url) => url.includes('icims.com') || url.includes('careers-'),
+    formSelector: '#iCIMS_MainWrapper form, iframe#icims_content_iframe',
+    submitSelector: 'input[type="submit"], button[type="submit"], .iCIMS_Button',
+    resumeSelector: 'input[type="file"]',
+    waitForForm: 5000,
+    usesIframe: true,
+  },
+  ashby: {
+    detect: (url, html) => url.includes('ashbyhq.com') || url.includes('jobs.ashby') || html.includes('ashby'),
+    formSelector: 'form[class*="application"], form._form, div[class*="ApplicationForm"]',
+    submitSelector: 'button[type="submit"], button[class*="submit"]',
+    resumeSelector: 'input[type="file"]',
+    waitForForm: 4000,
+  },
+  smartrecruiters: {
+    detect: (url) => url.includes('smartrecruiters.com') || url.includes('jobs.smartrecruiters'),
+    formSelector: 'form.application-form, div[data-test="application-form"], form',
+    submitSelector: 'button[data-test="footer-submit"], button[type="submit"]',
+    resumeSelector: 'input[type="file"]',
+    waitForForm: 4000,
+  },
+  bamboohr: {
+    detect: (url) => url.includes('bamboohr.com'),
+    formSelector: 'form#applicationForm, form[class*="application"]',
+    submitSelector: 'button[type="submit"], input[type="submit"]',
+    resumeSelector: 'input[type="file"]',
+    waitForForm: 3000,
+  },
+  recruitee: {
+    detect: (url) => url.includes('recruitee.com') || url.includes('careers.'),
+    formSelector: 'form[class*="application"], div[class*="application-form"]',
+    submitSelector: 'button[type="submit"]',
+    resumeSelector: 'input[type="file"]',
+    waitForForm: 3000,
+  },
+}
+
 function detectATS() {
   const url = window.location.href.toLowerCase()
   const html = document.body?.innerHTML?.substring(0, 5000)?.toLowerCase() || ''
 
-  if (url.includes('greenhouse.io') || html.includes('greenhouse')) return 'greenhouse'
-  if (url.includes('lever.co') || html.includes('lever-')) return 'lever'
-  if (url.includes('myworkdayjobs.com') || html.includes('workday')) return 'workday'
-  if (url.includes('smartrecruiters.com')) return 'smartrecruiters'
-  if (url.includes('bamboohr.com')) return 'bamboohr'
-  if (url.includes('icims.com')) return 'icims'
-  if (url.includes('ashbyhq.com')) return 'ashby'
-  if (url.includes('recruitee.com')) return 'recruitee'
+  for (const [name, config] of Object.entries(ATS_CONFIGS)) {
+    if (config.detect(url, html)) return name
+  }
   return 'generic'
 }
 
@@ -167,12 +240,52 @@ async function handleSelect(select, resumeData) {
   return false
 }
 
+async function fetchResumeBlob(resumeUrl, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await fetch(resumeUrl)
+      if (response.ok) return await response.blob()
+    } catch {}
+    if (i < retries) await humanDelay(1000, 2000)
+  }
+  return null
+}
+
 async function uploadResume(fileInput, resumeUrl) {
-  if (!resumeUrl) return false
+  let blob = null
+
+  // Try fetching with retries
+  if (resumeUrl) {
+    blob = await fetchResumeBlob(resumeUrl)
+
+    // Cache on success
+    if (blob) {
+      try {
+        const reader = new FileReader()
+        const base64 = await new Promise((resolve) => {
+          reader.onloadend = () => resolve(reader.result)
+          reader.readAsDataURL(blob)
+        })
+        await chrome.storage.local.set({ cachedResumeData: base64, cachedResumeUrl: resumeUrl })
+      } catch {}
+    }
+  }
+
+  // Fallback: cached resume
+  if (!blob) {
+    try {
+      const { cachedResumeData } = await chrome.storage.local.get('cachedResumeData')
+      if (cachedResumeData) {
+        const res = await fetch(cachedResumeData)
+        blob = await res.blob()
+        console.log('[Jobflow] Using cached resume fallback')
+      }
+    } catch {}
+  }
+
+  if (!blob) return false
 
   try {
-    const response = await fetch(resumeUrl)
-    const blob = await response.blob()
     const file = new File([blob], 'resume.pdf', { type: 'application/pdf' })
     const dt = new DataTransfer()
     dt.items.add(file)
@@ -184,7 +297,15 @@ async function uploadResume(fileInput, resumeUrl) {
   }
 }
 
-function findSubmitButton() {
+function findSubmitButton(ats) {
+  // Try platform-specific selector first
+  const config = ATS_CONFIGS[ats]
+  if (config?.submitSelector) {
+    const el = document.querySelector(config.submitSelector)
+    if (el && !el.disabled && el.offsetParent !== null) return el
+  }
+
+  // Generic fallback
   const buttons = document.querySelectorAll('button, input[type="submit"], a[class*="submit"]')
   const submitTexts = ['submit', 'apply', 'send', 'kirim', 'lamar', 'submit application', 'apply now']
 
@@ -305,10 +426,27 @@ function isLoginPage() {
   return false
 }
 
+async function waitForForm(ats) {
+  const config = ATS_CONFIGS[ats]
+  const timeouts = getTimeouts(ats)
+  if (config?.formSelector) {
+    const el = await waitForElement(config.formSelector, timeouts.form)
+    if (el) return el
+  }
+  // Generic fallback: wait for any form with adaptive timeout
+  return await waitForElement('form, [class*="application"], [class*="apply"]', timeouts.form)
+}
+
 async function handleATSApply(resumeData) {
   try {
-    // Wait longer for SPA career pages to fully render
-    await humanDelay(4000, 6000)
+    const ats = detectATS()
+    const config = ATS_CONFIGS[ats]
+    console.log(`[Jobflow] Detected ATS: ${ats}`)
+
+    // Wait for platform-specific form element with adaptive timeout
+    const timeouts = getTimeouts(ats)
+    await waitForForm(ats)
+    await humanDelay(timeouts.settle, timeouts.settle + 1000) // adaptive settle delay
 
     // Check if this is a login/auth page — can't auto-apply
     if (isLoginPage()) {
@@ -328,16 +466,54 @@ async function handleATSApply(resumeData) {
       }
     }
 
+    // Handle iframe-based ATS (iCIMS, some Workday) first
+    if (config?.usesIframe) {
+      const iframeDoc = getIframeDocument()
+      if (iframeDoc) {
+        console.log(`[Jobflow] ${ats}: using iframe form`)
+        let filled = 0, total = 0
+        const iframeInputs = iframeDoc.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea')
+        for (const input of iframeInputs) {
+          if (input.offsetParent === null) continue
+          if (input.value && input.value.trim()) continue
+          total++
+          const label = getFieldLabel(input)
+          const key = matchField(label)
+          if (key && resumeData[key]) {
+            const success = await fillField(input, resumeData[key])
+            if (success) filled++
+            await humanDelay(200, 500)
+          }
+        }
+        // Try submit inside iframe
+        const iframeSubmit = iframeDoc.querySelector(config.submitSelector || 'input[type="submit"], button[type="submit"]')
+        if (iframeSubmit && !iframeSubmit.disabled) {
+          iframeSubmit.click()
+          await humanDelay(3000, 5000)
+          return { status: 'applied', reason: `${ats}: iframe submitted, ${filled}/${total} fields` }
+        }
+        return { status: 'needs_review', reason: `${ats}: iframe form, no submit button, ${filled}/${total} fields filled` }
+      }
+    }
+
     // Fill form on main document
-    let { filled, total, ats } = await fillForm(resumeData)
+    let { filled, total } = await fillForm(resumeData)
     console.log(`[Jobflow] Filled ${filled}/${total} fields on ${ats}`)
 
-    // If no fields found, check for iframe-embedded forms
+    // Handle platform-specific resume upload if generic missed it
+    if (config?.resumeSelector && resumeData.resumeUrl) {
+      const resumeInput = document.querySelector(config.resumeSelector)
+      if (resumeInput && resumeInput.offsetParent !== null) {
+        await uploadResume(resumeInput, resumeData.resumeUrl)
+        await humanDelay(1000, 2000)
+      }
+    }
+
+    // If no fields found, check for iframe-embedded forms (non-configured ATS)
     if (total === 0) {
       const iframeDoc = getIframeDocument()
       if (iframeDoc) {
         console.log('[Jobflow] Trying iframe form...')
-        // Override document context for form filling in iframe
         const iframeInputs = iframeDoc.querySelectorAll('input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="checkbox"]):not([type="radio"]), textarea')
         for (const input of iframeInputs) {
           if (input.offsetParent === null) continue
@@ -354,20 +530,20 @@ async function handleATSApply(resumeData) {
       }
     }
 
-    // If still no fields, page might need more time (heavy SPA)
+    // If still no fields, page might need more time (heavy SPA like Workday)
     if (total === 0) {
-      await humanDelay(5000, 8000)
+      const extraWait = timeouts.extraWait
+      await humanDelay(extraWait, extraWait + 3000)
       const retry = await fillForm(resumeData)
       filled = retry.filled
       total = retry.total
-      ats = retry.ats
     }
 
     // Try multi-page forms — click Next if available
     for (let step = 0; step < 5; step++) {
       await humanDelay(1000, 2000)
 
-      const submitBtn = findSubmitButton()
+      const submitBtn = findSubmitButton(ats)
       if (submitBtn) {
         const text = (submitBtn.textContent || submitBtn.value || '').trim().toLowerCase()
         if (text.includes('submit') || text.includes('apply') || text.includes('send') || text.includes('kirim')) {
@@ -385,11 +561,17 @@ async function handleATSApply(resumeData) {
         }
       }
 
-      // Look for Next/Continue button
-      const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
-        const t = b.textContent.trim().toLowerCase()
-        return (t.includes('next') || t.includes('continue') || t.includes('lanjut')) && !b.disabled
-      })
+      // Look for Next/Continue button (platform-aware for Workday)
+      let nextBtn
+      if (ats === 'workday') {
+        nextBtn = document.querySelector('button[data-automation-id="bottom-navigation-next-button"]')
+      }
+      if (!nextBtn) {
+        nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
+          const t = b.textContent.trim().toLowerCase()
+          return (t.includes('next') || t.includes('continue') || t.includes('lanjut')) && !b.disabled
+        })
+      }
 
       if (nextBtn) {
         nextBtn.click()
@@ -401,8 +583,8 @@ async function handleATSApply(resumeData) {
       }
     }
 
-    // No submit button found
-    const submitBtn = findSubmitButton()
+    // Final attempt: find and click submit
+    const submitBtn = findSubmitButton(ats)
     if (submitBtn) {
       submitBtn.click()
       await humanDelay(3000, 5000)

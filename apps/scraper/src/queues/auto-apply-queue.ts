@@ -8,8 +8,8 @@ export const autoApplyQueue = new Queue<AutoApplyJobData>(AUTO_APPLY_QUEUE_NAME,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   connection: createRedisConnection() as any,
   defaultJobOptions: {
-    attempts: 2,
-    backoff: { type: 'fixed', delay: 60_000 },
+    attempts: 3,
+    backoff: { type: 'exponential', delay: 10_000 },
     removeOnComplete: { count: 200 },
     removeOnFail: { count: 100 },
   },

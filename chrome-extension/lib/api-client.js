@@ -78,6 +78,47 @@ export async function fetchResumeData() {
   return resume
 }
 
+export async function detectFormViaVision(screenshotBase64, pageUrl) {
+  const token = await getToken()
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/vision-detect`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ screenshot: screenshotBase64, url: pageUrl }),
+    })
+    const json = await res.json()
+    if (json.success && json.data) return json.data // { submitSelector, fields[] }
+    return null
+  } catch {
+    return null
+  }
+}
+
+export async function checkLinkedInSession() {
+  try {
+    const res = await fetch('https://www.linkedin.com/voyager/api/me', {
+      credentials: 'include',
+      headers: { 'csrf-token': 'ajax:0' },
+    })
+    return res.status === 200
+  } catch {
+    // Fallback: try loading feed page and check for login redirect
+    try {
+      const res = await fetch('https://www.linkedin.com/feed/', {
+        credentials: 'include',
+        redirect: 'manual',
+      })
+      // 200 = logged in, 3xx = redirect to login
+      return res.status === 200 || res.type === 'opaqueredirect'
+    } catch {
+      return false
+    }
+  }
+}
+
 export async function updateStatus(applicationId, status, notes) {
   const token = await getToken()
   const body = { status }

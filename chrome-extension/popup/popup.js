@@ -30,7 +30,7 @@ function updateUI() {
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, state => {
     if (chrome.runtime.lastError || !state) return
 
-    const { isRunning, queue = [], currentIndex = 0, results = {}, logs = [] } = state
+    const { isRunning, queue = [], currentIndex = 0, results = {}, logs = [], retryQueue = [] } = state
     const total = queue.length
     const progress = total > 0 ? Math.round((currentIndex / total) * 100) : 0
 
@@ -45,7 +45,8 @@ function updateUI() {
 
     // Progress
     $('progress-bar').style.width = `${progress}%`
-    $('progress-text').textContent = total > 0 ? `${currentIndex} / ${total} jobs` : '—'
+    const retryInfo = retryQueue.length > 0 ? ` (${retryQueue.length} in retry)` : ''
+    $('progress-text').textContent = total > 0 ? `${currentIndex} / ${total} jobs${retryInfo}` : '—'
 
     // Stats
     $('stat-applied').textContent = results.applied || 0

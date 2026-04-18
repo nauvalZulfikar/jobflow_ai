@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '@jobflow/db'
-import { generateFormAnswers } from '@jobflow/ai'
+import { generateFormAnswers, openai, AI_MODEL } from '@jobflow/ai'
 import { success, failure } from '@jobflow/shared'
 import { autoApplyQueue } from '../plugins/auto-apply-queue.js'
 import { IndeedApplier } from '../appliers/indeed.applier.js'
@@ -151,6 +151,52 @@ export async function autoApplyRoutes(app: FastifyInstance) {
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send(failure('SERVER_ERROR', 'Gagal mengambil status auto-apply'))
+    }
+  })
+
+  // POST /api/auto-apply/vision-detect — AI-based form element detection from screenshot
+  app.post('/vision-detect', async (request, reply) => {
+    try {
+      const { screenshot, url } = request.body as { screenshot: string; url: string }
+      if (!screenshot) {
+        return reply.status(400).send(failure('MISSING_SCREENSHOT', 'Screenshot required'))
+      }
+
+      const response = await openai.chat.completions.create({
+        model: AI_MODEL,
+        messages: [
+          {
+            role: 'system',
+            content: `You are analyzing a job application page screenshot. Identify the submit/apply button and return a CSS selector that would match it. Also identify any unfilled required form fields. Return JSON only: { "submitSelector": "css selector string", "fields": [{ "label": "field name", "selector": "css selector" }] }. If you cannot find a submit button, return { "submitSelector": null, "fields": [] }.`,
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `This is a screenshot of a job application page at ${url}. Find the submit/apply button and any unfilled form fields.`,
+              },
+              {
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${screenshot}` },
+              },
+            ],
+          },
+        ],
+        max_tokens: 500,
+        response_format: { type: 'json_object' },
+      })
+
+      const content = response.choices[0]?.message?.content
+      if (!content) {
+        return reply.send(success(null))
+      }
+
+      const parsed = JSON.parse(content)
+      return reply.send(success(parsed))
+    } catch (err) {
+      request.log.error(err)
+      return reply.send(success(null)) // Don't fail the whole flow for vision errors
     }
   })
 

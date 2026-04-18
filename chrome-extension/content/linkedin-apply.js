@@ -19,6 +19,25 @@ function waitForElement(selector, timeout = 5000) {
   })
 }
 
+// Smart wait: try multiple selectors with increasing timeouts
+async function waitForAnyElement(selectors, retries = 3, baseTimeout = 5000) {
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const timeout = baseTimeout * (attempt + 1) // 5s, 10s, 15s
+    for (const selector of selectors) {
+      const el = await waitForElement(selector, timeout)
+      if (el) return el
+    }
+    // Between retries: scroll to trigger lazy-loading and wait
+    if (attempt < retries - 1) {
+      window.scrollBy(0, 200)
+      await humanDelay(1000, 2000)
+      window.scrollTo(0, 0)
+      await humanDelay(500, 1000)
+    }
+  }
+  return null
+}
+
 function findButton(container, textOptions) {
   const buttons = container.querySelectorAll('button')
   for (const btn of buttons) {
@@ -50,13 +69,55 @@ function findEasyApplyButton() {
   return null
 }
 
+async function fetchResumeBlob(resumeUrl, retries = 2) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const response = await fetch(resumeUrl)
+      if (response.ok) return await response.blob()
+    } catch {}
+    if (i < retries) await humanDelay(1000, 2000) // wait before retry
+  }
+  return null
+}
+
 async function uploadResume(fileInput, resumeUrl) {
-  if (!resumeUrl || !fileInput) return false
+  if (!fileInput) return false
+
+  let blob = null
+
+  // Try fetching from URL with retries
+  if (resumeUrl) {
+    blob = await fetchResumeBlob(resumeUrl)
+
+    // Cache successful fetch for fallback
+    if (blob) {
+      try {
+        const reader = new FileReader()
+        const base64 = await new Promise((resolve) => {
+          reader.onloadend = () => resolve(reader.result)
+          reader.readAsDataURL(blob)
+        })
+        await chrome.storage.local.set({ cachedResumeData: base64, cachedResumeUrl: resumeUrl })
+      } catch {}
+    }
+  }
+
+  // Fallback: use cached resume if fetch failed
+  if (!blob) {
+    try {
+      const { cachedResumeData } = await chrome.storage.local.get('cachedResumeData')
+      if (cachedResumeData) {
+        const res = await fetch(cachedResumeData)
+        blob = await res.blob()
+        console.log('[Jobflow] Using cached resume fallback')
+      }
+    } catch {}
+  }
+
+  if (!blob) return false
+
   try {
-    const response = await fetch(resumeUrl)
-    if (!response.ok) return false
-    const blob = await response.blob()
-    const ext = (resumeUrl.match(/\.(pdf|docx?|rtf)(\?|$)/i)?.[1] || 'pdf').toLowerCase()
+    const ext = (resumeUrl?.match(/\.(pdf|docx?|rtf)(\?|$)/i)?.[1] || 'pdf').toLowerCase()
     const mime = ext === 'pdf' ? 'application/pdf'
       : ext === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
       : ext === 'doc' ? 'application/msword'
@@ -120,7 +181,22 @@ async function walkFormSteps(modal, resumeData = {}) {
       continue
     }
 
-    // Neither — stuck
+    // Neither — wait a bit and retry once (button might be rendering)
+    await humanDelay(2000, 3000)
+    const retrySubmit = findButton(modal, ['Submit application', 'Submit'])
+    if (retrySubmit) {
+      retrySubmit.click()
+      await humanDelay(3000, 5000)
+      return await verifySubmission()
+    }
+    const retryNext = findButton(modal, ['Next', 'Review', 'Continue'])
+    if (retryNext) {
+      retryNext.click()
+      await humanDelay(1500, 2500)
+      continue
+    }
+
+    // Still stuck
     return { status: 'failed', reason: 'no_navigation_button' }
   }
   return { status: 'failed', reason: 'too_many_steps' }
@@ -155,14 +231,27 @@ async function handleApply(resumeData = {}) {
   try {
     await humanDelay(1000, 2000)
 
-    // We're on /apply/ page — modal should already be open
-    let modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 20000)
+    // Use smart wait with multiple selectors and retries
+    const modalSelectors = [
+      '[role="dialog"]',
+      '.jobs-easy-apply-modal',
+      '.jobs-easy-apply-content',
+      'div[class*="easy-apply"]',
+      '.artdeco-modal',
+    ]
+
+    let modal = await waitForAnyElement(modalSelectors, 3, 7000)
+
+    // If still no modal, try clicking Easy Apply button on the page
     if (!modal) {
-      // Retry once — LinkedIn SPA sometimes needs a nudge to render the modal
-      window.scrollBy(0, 300)
-      await humanDelay(1500, 2500)
-      modal = await waitForElement('[role="dialog"], .jobs-easy-apply-modal', 10000)
+      const easyApplyBtn = findEasyApplyButton()
+      if (easyApplyBtn) {
+        easyApplyBtn.click()
+        await humanDelay(2000, 3000)
+        modal = await waitForAnyElement(modalSelectors, 2, 5000)
+      }
     }
+
     if (modal) {
       return await walkFormSteps(modal, resumeData)
     }
