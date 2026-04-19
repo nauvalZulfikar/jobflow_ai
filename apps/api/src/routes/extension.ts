@@ -7,6 +7,7 @@ type LogEntry = {
   applicationId?: string | null
   level?: 'info' | 'warn' | 'error'
   message: string
+  metadata?: Record<string, unknown> | null
   createdAt?: string
 }
 
@@ -36,6 +37,7 @@ export async function extensionRoutes(app: FastifyInstance) {
           applicationId: e.applicationId ?? null,
           level: e.level === 'warn' || e.level === 'error' ? e.level : 'info',
           message: e.message.slice(0, MAX_MESSAGE_LEN),
+          metadata: e.metadata ?? undefined,
           createdAt: e.createdAt ? new Date(e.createdAt) : new Date(),
         }))
 

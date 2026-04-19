@@ -100,12 +100,24 @@ export default async function ExtensionLogsPage({ searchParams }: PageProps) {
               {entries.length === 0 ? (
                 <div className="text-gray-400">No entries</div>
               ) : (
-                entries.map(e => (
-                  <div key={e.id} className={`whitespace-pre-wrap ${levelColor(e.level)}`}>
-                    <span className="text-gray-400">[{new Date(e.createdAt).toLocaleTimeString('id-ID')}]</span>{' '}
-                    {e.message}
-                  </div>
-                ))
+                entries.map(e => {
+                  const meta = e.metadata as { diagnosis?: { rootCause?: string; specifics?: string; canRetry?: boolean; fixSuggestion?: string }; reason?: string } | null
+                  const diag = meta?.diagnosis
+                  return (
+                    <div key={e.id} className={`whitespace-pre-wrap ${levelColor(e.level)}`}>
+                      <span className="text-gray-400">[{new Date(e.createdAt).toLocaleTimeString('id-ID')}]</span>{' '}
+                      {e.message}
+                      {diag && (
+                        <div className="ml-8 mt-1 rounded border border-amber-200 bg-amber-50 p-2 text-amber-900">
+                          <div><span className="font-semibold">rootCause:</span> {diag.rootCause || '—'}</div>
+                          {diag.specifics && <div><span className="font-semibold">specifics:</span> {diag.specifics}</div>}
+                          {diag.fixSuggestion && <div><span className="font-semibold">fix:</span> {diag.fixSuggestion}</div>}
+                          <div><span className="font-semibold">canRetry:</span> {String(diag.canRetry ?? '—')}</div>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })
               )}
             </div>
           </div>

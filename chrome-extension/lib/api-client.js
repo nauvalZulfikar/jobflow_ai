@@ -153,6 +153,48 @@ export async function pollAutoApplyStatus(applicationId, maxWaitMs = 120000) {
   return { status: 'failed', reason: 'server_timeout' }
 }
 
+export async function diagnoseFailure({ url, screenshotBase64, domSnippet, ruleBasedReason, attempted }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/diagnose`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, screenshotBase64, domSnippet, ruleBasedReason, attempted }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
+export async function guideForm({ url, screenshotBase64, domSnippet, resumeData, filledCount, totalCount }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/guide-form`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, screenshotBase64, domSnippet, resumeData, filledCount, totalCount }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
+export async function agentStep({ url, screenshotBase64, goal, history, resumeData, maxStep, currentStep }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/agent-step`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, screenshotBase64, goal, history, resumeData, maxStep, currentStep }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
 export async function pushExtensionLogs(entries) {
   if (!Array.isArray(entries) || entries.length === 0) return { success: true, ignored: true }
   const token = await getToken()

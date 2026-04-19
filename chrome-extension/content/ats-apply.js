@@ -597,11 +597,96 @@ async function handleATSApply(resumeData) {
   }
 }
 
+function captureDomSnippet(maxLen = 8000) {
+  const forms = document.querySelectorAll('form')
+  if (forms.length > 0) {
+    return Array.from(forms).map(f => f.outerHTML).join('\n').slice(0, maxLen)
+  }
+  const hosts = document.querySelectorAll('[class*="apply"], [id*="apply"], main, body')
+  for (const h of hosts) {
+    if (h.querySelector('input, textarea, select')) return h.outerHTML.slice(0, maxLen)
+  }
+  return document.body?.innerHTML?.slice(0, maxLen) || ''
+}
+
+async function executeFieldInstructions(fields) {
+  let filled = 0
+  const errors = []
+  for (const f of fields || []) {
+    try {
+      const el = document.querySelector(f.selector)
+      if (!el) { errors.push({ selector: f.selector, error: 'not_found' }); continue }
+      if (el.offsetParent === null) { errors.push({ selector: f.selector, error: 'hidden' }); continue }
+      if (el.tagName === 'SELECT') {
+        const options = Array.from(el.options)
+        const match = options.find(o =>
+          String(o.value).toLowerCase() === String(f.value).toLowerCase() ||
+          o.text.toLowerCase().includes(String(f.value).toLowerCase())
+        )
+        if (match) { el.value = match.value; el.dispatchEvent(new Event('change', { bubbles: true })); filled++ }
+        else errors.push({ selector: f.selector, error: 'no_matching_option' })
+      } else if (el.type === 'checkbox' || el.type === 'radio') {
+        if (!el.checked) { el.click(); filled++ }
+      } else {
+        const ok = await fillField(el, String(f.value))
+        if (ok) filled++
+      }
+      await humanDelay(200, 500)
+    } catch (err) {
+      errors.push({ selector: f.selector, error: err.message })
+    }
+  }
+  return { filled, errors }
+}
+
+async function executeAction(step) {
+  try {
+    if (step.action === 'click') {
+      const el = document.querySelector(step.selector)
+      if (!el) return { ok: false, reason: 'not_found' }
+      el.click()
+      return { ok: true }
+    }
+    if (step.action === 'type') {
+      const el = document.querySelector(step.selector)
+      if (!el) return { ok: false, reason: 'not_found' }
+      await fillField(el, String(step.value ?? ''))
+      return { ok: true }
+    }
+    if (step.action === 'wait') {
+      await new Promise(r => setTimeout(r, Math.min(Math.max(Number(step.ms) || 1000, 200), 10000)))
+      return { ok: true }
+    }
+    return { ok: false, reason: 'unknown_action' }
+  } catch (err) {
+    return { ok: false, reason: err.message }
+  }
+}
+
 // Listen for messages from background service worker
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'ATS_APPLY') {
     handleATSApply(message.resumeData).then(sendResponse)
     return true
+  }
+  if (message.action === 'GET_DOM_SNIPPET') {
+    sendResponse({ domSnippet: captureDomSnippet(message.maxLen || 8000), url: location.href })
+    return
+  }
+  if (message.action === 'EXECUTE_FIELDS') {
+    executeFieldInstructions(message.fields).then(sendResponse)
+    return true
+  }
+  if (message.action === 'EXECUTE_ACTION') {
+    executeAction(message.step).then(sendResponse)
+    return true
+  }
+  if (message.action === 'CLICK_SUBMIT') {
+    try {
+      const btn = document.querySelector(message.selector)
+      if (btn) { btn.click(); sendResponse({ ok: true }) } else { sendResponse({ ok: false, reason: 'not_found' }) }
+    } catch (err) { sendResponse({ ok: false, reason: err.message }) }
+    return
   }
   if (message.action === 'PING') {
     sendResponse({ ok: true })

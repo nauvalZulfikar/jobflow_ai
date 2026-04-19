@@ -347,6 +347,7 @@ model ExtensionActivityLog {
   applicationId String?
   level         String   @default("info") // "info" | "warn" | "error"
   message       String   @db.Text
+  metadata      Json?    // AI diagnosis, DOM snippets, screenshot refs, etc.
   createdAt     DateTime @default(now())
 
   @@index([userId, batchId, createdAt])

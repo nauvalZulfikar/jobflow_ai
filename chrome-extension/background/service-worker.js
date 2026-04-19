@@ -1,4 +1,4 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, pushExtensionLogs } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, pushExtensionLogs, diagnoseFailure, guideForm, agentStep } from '../lib/api-client.js'
 
 // ---------------------------------------------------------------------------
 // Client-side apply — opens a tab in user's browser, uses content scripts
@@ -34,6 +34,114 @@ function sendTabMessage(tabId, message, timeoutMs = 120000) {
   })
 }
 
+// ---- AI helpers ----
+
+async function captureTabScreenshot(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (!tab.active) {
+      await chrome.tabs.update(tabId, { active: true })
+      await new Promise(r => setTimeout(r, 600))
+    }
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
+    return dataUrl?.replace(/^data:image\/png;base64,/, '') || null
+  } catch { return null }
+}
+
+async function captureTabDom(tabId) {
+  try {
+    const res = await sendTabMessage(tabId, { action: 'GET_DOM_SNIPPET', maxLen: 8000 }, 10000)
+    return res?.domSnippet || ''
+  } catch { return '' }
+}
+
+async function applyViaAIGuide(tabId, applyUrl, resumeData, priorResult) {
+  try {
+    const [screenshotBase64, domSnippet] = await Promise.all([
+      captureTabScreenshot(tabId),
+      captureTabDom(tabId),
+    ])
+    const filledMatch = /(\d+)\/(\d+)\s*fields/.exec(priorResult?.reason || '')
+    const filledCount = filledMatch ? Number(filledMatch[1]) : undefined
+    const totalCount = filledMatch ? Number(filledMatch[2]) : undefined
+
+    await addLog(`  🧠 AI guide-form: asking vision model for field map...`)
+    const guidance = await guideForm({ url: applyUrl, screenshotBase64, domSnippet, resumeData, filledCount, totalCount })
+    if (!guidance?.fields || guidance.fields.length === 0) {
+      await addLog(`  ⚠️ AI guide returned no fields${guidance?.unsure ? ` (${guidance.unsure})` : ''}`)
+      return null
+    }
+
+    const fillRes = await sendTabMessage(tabId, { action: 'EXECUTE_FIELDS', fields: guidance.fields }, 60000)
+    await addLog(`  🧠 AI filled ${fillRes?.filled || 0}/${guidance.fields.length} fields`)
+
+    if (guidance.submitSelector) {
+      await new Promise(r => setTimeout(r, 1500))
+      const clickRes = await sendTabMessage(tabId, { action: 'CLICK_SUBMIT', selector: guidance.submitSelector }, 15000)
+      if (clickRes?.ok) {
+        await new Promise(r => setTimeout(r, 4000))
+        return { status: 'applied', reason: `ai_guide_submit (${fillRes?.filled || 0} fields)` }
+      }
+    }
+    return { status: 'needs_review', reason: `ai_guide: filled ${fillRes?.filled || 0}, no submit` }
+  } catch (err) {
+    return { status: 'failed', reason: `ai_guide_error: ${err.message || err}` }
+  }
+}
+
+async function applyViaAgent(tabId, applyUrl, resumeData, maxSteps = 6) {
+  const history = []
+  for (let step = 1; step <= maxSteps; step++) {
+    const screenshotBase64 = await captureTabScreenshot(tabId)
+    if (!screenshotBase64) {
+      return { status: 'failed', reason: 'agent: screenshot_failed' }
+    }
+    const decision = await agentStep({
+      url: applyUrl,
+      screenshotBase64,
+      goal: 'Submit this job application using the provided resume data.',
+      history,
+      resumeData,
+      maxStep: maxSteps,
+      currentStep: step,
+    })
+    if (!decision?.action) {
+      return { status: 'failed', reason: 'agent: no_decision' }
+    }
+    await addLog(`  🤖 Agent step ${step}/${maxSteps}: ${decision.action} ${decision.selector ? `(${decision.selector})` : ''}`)
+
+    if (decision.action === 'done') {
+      return { status: 'applied', reason: `agent_done: ${decision.reason || ''}` }
+    }
+    if (decision.action === 'fail') {
+      return { status: 'failed', reason: `agent_gaveup: ${decision.reason || ''}` }
+    }
+    if (decision.action === 'wait') {
+      await new Promise(r => setTimeout(r, Math.min(Math.max(Number(decision.ms) || 1500, 200), 10000)))
+      history.push({ action: `wait ${decision.ms || 1500}ms`, reason: decision.reason || '', ok: true })
+      continue
+    }
+    const res = await sendTabMessage(tabId, { action: 'EXECUTE_ACTION', step: decision }, 15000)
+    history.push({
+      action: `${decision.action} ${decision.selector || ''}${decision.value ? '=' + String(decision.value).slice(0, 20) : ''}`,
+      reason: decision.reason || '',
+      ok: !!res?.ok,
+    })
+    await new Promise(r => setTimeout(r, 1200))
+  }
+  return { status: 'failed', reason: 'agent: max_steps_reached' }
+}
+
+async function runDiagnose(tabId, applyUrl, ruleBasedReason, attempted) {
+  try {
+    const [screenshotBase64, domSnippet] = await Promise.all([
+      captureTabScreenshot(tabId),
+      captureTabDom(tabId),
+    ])
+    return await diagnoseFailure({ url: applyUrl, screenshotBase64, domSnippet, ruleBasedReason, attempted })
+  } catch { return null }
+}
+
 async function applyViaClientSide(app, resumeData) {
   const applyUrl = app.job?.applyUrl
   const isLinkedIn = applyUrl?.includes('linkedin.com')
@@ -46,6 +154,7 @@ async function applyViaClientSide(app, resumeData) {
     await new Promise(r => setTimeout(r, 3000))
 
     let result
+    let attempted = isLinkedIn ? 'linkedin_easy_apply' : 'ats_form'
     if (isLinkedIn) {
       // Content script auto-injected via manifest for linkedin.com/jobs/*
       result = await sendTabMessage(tab.id, {
@@ -63,6 +172,32 @@ async function applyViaClientSide(app, resumeData) {
         action: 'ATS_APPLY',
         resumeData,
       })
+    }
+
+    // Level 2: AI-guided form filling if the ATS rule-based filler didn't close it
+    if (!isLinkedIn && result && (result.status === 'needs_review' || (result.status === 'failed' && !isPermanentError(result.reason)))) {
+      const guided = await applyViaAIGuide(tab.id, applyUrl, resumeData, result)
+      if (guided && guided.status === 'applied') {
+        attempted = 'ai_guide'
+        result = guided
+      } else if (guided && guided.status === 'needs_review' && result.status === 'failed') {
+        result = guided
+      }
+    }
+
+    // Level 3: Agent loop — last-resort for non-LinkedIn failures
+    if (!isLinkedIn && result && result.status === 'failed' && !isPermanentError(result.reason)) {
+      const agented = await applyViaAgent(tab.id, applyUrl, resumeData, 6)
+      if (agented && (agented.status === 'applied' || agented.status === 'needs_review')) {
+        attempted = 'agent'
+        result = agented
+      }
+    }
+
+    // Level 1: diagnose whatever we ended up with (only if still failed)
+    if (result && result.status === 'failed') {
+      const diagnosis = await runDiagnose(tab.id, applyUrl, result.reason, attempted)
+      if (diagnosis) result.diagnosis = diagnosis
     }
 
     return result || { status: 'failed', reason: 'no_response' }
@@ -141,18 +276,20 @@ async function generateBatchId() {
   return id
 }
 
-async function queueRemoteLog(message, level = 'info', applicationId = null) {
+async function queueRemoteLog(message, level = 'info', applicationId = null, metadata = null) {
   try {
     const batchId = await getActiveBatchId()
     if (!batchId) return
     const { logBuffer = [] } = await chrome.storage.local.get('logBuffer')
-    logBuffer.push({
+    const entry = {
       batchId,
       level,
       message,
       applicationId: applicationId || currentAppId || null,
       createdAt: new Date().toISOString(),
-    })
+    }
+    if (metadata) entry.metadata = metadata
+    logBuffer.push(entry)
     await chrome.storage.local.set({ logBuffer })
     scheduleLogFlush(logBuffer.length >= LOG_FLUSH_BATCH_SIZE)
   } catch {}
@@ -212,7 +349,7 @@ async function addLog(msg, meta = {}) {
   if (logs.length > 50) logs.splice(0, logs.length - 50)
   await setState({ logs })
   // Mirror to server DB (best-effort, buffered)
-  queueRemoteLog(msg, meta.level || 'info', meta.applicationId || null)
+  queueRemoteLog(msg, meta.level || 'info', meta.applicationId || null, meta.metadata || null)
 }
 
 async function startAutoApply() {
@@ -390,19 +527,30 @@ async function _processNextJob() {
     const reason = result.reason || 'unknown'
     const retryCount = app._retryCount || 0
 
+    // Surface AI diagnosis to both popup log and server metadata
+    if (result.diagnosis) {
+      const d = result.diagnosis
+      await addLog(
+        `  🔍 AI diagnosis: ${d.rootCause || 'unknown'} — ${d.specifics || ''}`,
+        { level: 'warn', metadata: { diagnosis: d, reason } }
+      )
+      if (d.fixSuggestion) await addLog(`     Fix idea: ${d.fixSuggestion}`, { metadata: { diagnosis: d } })
+    }
+
     if (isPermanentError(reason)) {
       // Permanent error — skip retry, mark as failed immediately
       await updateStatus(app.id, 'saved', `[auto-apply error] ${reason} (permanent)`)
       results.failed++
-      await addLog(`  ❌ Permanent failure: ${reason} — no retry`)
-    } else if (retryCount < MAX_RETRIES) {
-      // Transient error — add to retry queue
+      await addLog(`  ❌ Permanent failure: ${reason} — no retry`, { level: 'error', metadata: result.diagnosis ? { diagnosis: result.diagnosis } : null })
+    } else if (retryCount < MAX_RETRIES && !(result.diagnosis && result.diagnosis.canRetry === false)) {
+      // Transient error — add to retry queue (but respect AI's "don't retry" verdict)
       retryQueue.push({ ...app, _retryCount: retryCount + 1, _retryReason: reason })
-      await addLog(`  ⚠️ Failed: ${reason} — will retry (${retryCount + 1}/${MAX_RETRIES})`)
+      await addLog(`  ⚠️ Failed: ${reason} — will retry (${retryCount + 1}/${MAX_RETRIES})`, { level: 'warn' })
     } else {
-      await updateStatus(app.id, 'saved', `[auto-apply error] ${reason} (after ${MAX_RETRIES} retries)`)
+      await updateStatus(app.id, 'saved', `[auto-apply error] ${reason}${result.diagnosis ? ` | ${result.diagnosis.rootCause}` : ''}`)
       results.failed++
-      await addLog(`  ❌ Failed after ${MAX_RETRIES} retries: ${reason}`)
+      const tailReason = result.diagnosis?.canRetry === false ? ' (AI: no retry)' : ` (after ${MAX_RETRIES} retries)`
+      await addLog(`  ❌ Failed${tailReason}: ${reason}`, { level: 'error', metadata: result.diagnosis ? { diagnosis: result.diagnosis } : null })
     }
   }
 
