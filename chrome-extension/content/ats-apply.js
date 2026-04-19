@@ -182,12 +182,13 @@ async function fillField(input, value) {
   input.value = ''
   input.dispatchEvent(new Event('input', { bubbles: true }))
 
-  // Set value character by character for React-based forms
-  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-    window.HTMLInputElement.prototype, 'value'
-  )?.set || Object.getOwnPropertyDescriptor(
-    window.HTMLTextAreaElement.prototype, 'value'
-  )?.set
+  // Set value via the native prototype setter so React-controlled inputs
+  // see the change. Must pick the correct prototype for the element type —
+  // calling HTMLInputElement's setter on a textarea throws Illegal invocation.
+  const proto = input.tagName === 'TEXTAREA'
+    ? window.HTMLTextAreaElement.prototype
+    : window.HTMLInputElement.prototype
+  const nativeInputValueSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
 
   if (nativeInputValueSetter) {
     nativeInputValueSetter.call(input, value)
@@ -205,36 +206,74 @@ async function handleSelect(select, resumeData) {
   const label = getFieldLabel(select).toLowerCase()
   const options = Array.from(select.options)
 
-  // Country select
-  if (label.includes('country') || label.includes('negara')) {
-    const target = resumeData.country || 'Indonesia'
-    const match = options.find(o =>
-      o.text.toLowerCase().includes(target.toLowerCase())
-    )
-    if (match) {
-      select.value = match.value
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
-    }
+  const setValue = (val) => {
+    select.value = val
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    select.dispatchEvent(new Event('blur', { bubbles: true }))
+    return true
+  }
+  const pickOption = (predicate) => {
+    const match = options.find(predicate)
+    return match ? setValue(match.value) : false
+  }
+
+  // Country / location selects
+  if (label.includes('country') || label.includes('negara') || label.includes('location') || label.includes('lokasi')) {
+    const target = (resumeData.country || 'Indonesia').toLowerCase()
+    if (pickOption(o => o.text.toLowerCase().includes(target))) return true
   }
 
   // Phone country code
   if (label.includes('phone country') || label.includes('country code')) {
-    const match = options.find(o =>
-      o.text.includes('Indonesia') || o.text.includes('+62')
-    )
-    if (match) {
-      select.value = match.value
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
+    if (pickOption(o => o.text.includes('Indonesia') || o.text.includes('+62'))) return true
+  }
+
+  // EEOC / self-identification selects — prefer a non-disclosure answer
+  // because these questions are optional and selecting a real answer
+  // without user consent would be wrong.
+  const isEEOC = (
+    label.includes('gender') ||
+    label.includes('race') ||
+    label.includes('ethnic') ||
+    label.includes('veteran') ||
+    label.includes('disability') ||
+    label.includes('hispanic')
+  )
+  if (isEEOC) {
+    const declinePatterns = [
+      'decline to self-identify',
+      "don't wish to answer",
+      'do not wish to answer',
+      'prefer not to',
+      'i do not',
+      'decline to answer',
+      'not specified',
+      'decline',
+      'prefer not',
+    ]
+    for (const p of declinePatterns) {
+      if (pickOption(o => o.text.toLowerCase().includes(p))) return true
+    }
+    // Last resort: pick the last option (conventionally "decline" on EEOC forms)
+    if (select.hasAttribute('required') && options.length > 1) {
+      return setValue(options[options.length - 1].value)
+    }
+  }
+
+  // Yes/No-style selects — default to the affirmative for "are you legally
+  // authorized / eligible" questions, negative for "require sponsorship".
+  if (options.length <= 4) {
+    const yesOpt = options.find(o => /^(yes|ya)\b/i.test(o.text.trim()))
+    const noOpt  = options.find(o => /^(no|tidak)\b/i.test(o.text.trim()))
+    if (yesOpt && noOpt) {
+      if (label.includes('sponsor') || label.includes('visa')) return setValue(noOpt.value)
+      if (label.includes('authori') || label.includes('eligib') || label.includes('legal')) return setValue(yesOpt.value)
     }
   }
 
   // For other selects, pick first non-empty option if required
   if (select.hasAttribute('required') && select.selectedIndex <= 0 && options.length > 1) {
-    select.selectedIndex = 1
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    return true
+    return setValue(options[1].value)
   }
 
   return false
@@ -539,6 +578,13 @@ async function handleATSApply(resumeData) {
       total = retry.total
     }
 
+    // Guard: if there are no form fields at all, we are almost certainly on a
+    // listings page, not an application form. Bail out with a clear reason
+    // rather than clicking a random "Apply" button and claiming success.
+    if (total === 0) {
+      return { status: 'failed', reason: `${ats}: no_form_fields_found` }
+    }
+
     // Try multi-page forms — click Next if available
     for (let step = 0; step < 5; step++) {
       await humanDelay(1000, 2000)
@@ -547,17 +593,27 @@ async function handleATSApply(resumeData) {
       if (submitBtn) {
         const text = (submitBtn.textContent || submitBtn.value || '').trim().toLowerCase()
         if (text.includes('submit') || text.includes('apply') || text.includes('send') || text.includes('kirim')) {
+          const prevUrl = location.href
           submitBtn.click()
           await humanDelay(3000, 5000)
 
-          // Check for success
+          // Check for success via confirmation text
           const body = document.body.innerText.toLowerCase()
-          if (body.includes('thank') || body.includes('submitted') || body.includes('received') ||
-              body.includes('terima kasih') || body.includes('berhasil') || body.includes('application has been')) {
+          const confirmed = body.includes('thank') || body.includes('submitted') || body.includes('received') ||
+                            body.includes('terima kasih') || body.includes('berhasil') || body.includes('application has been')
+          if (confirmed) {
             return { status: 'applied', reason: `${ats}: ${filled}/${total} fields filled` }
           }
-          // Even if no confirmation text, if we clicked submit, consider it done
-          return { status: 'applied', reason: `${ats}: submitted, ${filled}/${total} fields` }
+
+          // No confirmation text — be strict. Only call it applied if we actually
+          // filled fields AND the URL changed or the form disappeared.
+          const urlChanged = location.href !== prevUrl
+          const formGone = !document.querySelector('form input:not([type="hidden"]), form textarea')
+          if (filled > 0 && (urlChanged || formGone)) {
+            return { status: 'applied', reason: `${ats}: submitted (no confirmation text), ${filled}/${total} fields` }
+          }
+          // Otherwise flag for review instead of optimistically claiming success
+          return { status: 'needs_review', reason: `${ats}: clicked_submit_no_confirmation, ${filled}/${total} fields` }
         }
       }
 
@@ -583,12 +639,20 @@ async function handleATSApply(resumeData) {
       }
     }
 
-    // Final attempt: find and click submit
+    // Final attempt: find and click submit — but only consider it applied if
+    // we actually filled something and got visible confirmation.
     const submitBtn = findSubmitButton(ats)
-    if (submitBtn) {
+    if (submitBtn && filled > 0) {
+      const prevUrl = location.href
       submitBtn.click()
       await humanDelay(3000, 5000)
-      return { status: 'applied', reason: `${ats}: force submitted` }
+      const body = document.body.innerText.toLowerCase()
+      const confirmed = body.includes('thank') || body.includes('submitted') || body.includes('received') ||
+                        body.includes('terima kasih') || body.includes('berhasil') || body.includes('application has been')
+      if (confirmed || location.href !== prevUrl) {
+        return { status: 'applied', reason: `${ats}: force submitted (${filled}/${total} fields)` }
+      }
+      return { status: 'needs_review', reason: `${ats}: force_submit_no_confirmation, ${filled}/${total} fields` }
     }
 
     return { status: 'needs_review', reason: `${ats}: no submit button found, ${filled}/${total} fields filled` }
