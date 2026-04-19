@@ -40,14 +40,37 @@ export class LinkedInApplier extends BaseApplier {
     const page = await this.newStealthPage()
     await page.context().addCookies(this.parseCookies())
 
-    // Navigate directly to apply URL — opens the form modal immediately
-    const applyUrl = this.toApplyUrl(url)
-    await page.goto(applyUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    // Navigate to job page first (not directly to /apply/ which LinkedIn blocks)
+    const jobUrl = url.replace(/\/+$/, '').replace(/\/apply\/?.*$/, '')
+    await page.goto(jobUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
     await page.waitForTimeout(3000)
 
     if (page.url().includes('/login') || page.url().includes('/checkpoint')) {
       throw new Error('requires_auth')
     }
+
+    // Find and click Easy Apply button/link to open the form
+    const easyApplyBtn = page.locator('button:has-text("Easy Apply"), a:has-text("Easy Apply")').first()
+    const hasEasyApply = await easyApplyBtn.isVisible({ timeout: 5000 }).catch(() => false)
+    if (!hasEasyApply) {
+      throw new Error('no_easy_apply')
+    }
+
+    // If it's a link, get href and navigate; if button, click it
+    const tagName = await easyApplyBtn.evaluate((e) => e.tagName.toLowerCase())
+    if (tagName === 'a') {
+      const href = await easyApplyBtn.getAttribute('href')
+      if (href) {
+        const fullUrl = href.startsWith('http') ? href : `https://www.linkedin.com${href}`
+        await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
+      } else {
+        await easyApplyBtn.click()
+      }
+    } else {
+      await easyApplyBtn.click()
+    }
+    await page.waitForTimeout(3000)
+
     return page
   }
 

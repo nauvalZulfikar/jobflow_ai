@@ -16,6 +16,7 @@ export async function autoApplyRoutes(app: FastifyInstance) {
     try {
       const user = request.user as { id: string }
       const { id: applicationId } = request.params
+      request.log.warn({ applicationId, userId: user.id }, 'Auto-apply triggered')
 
       const application = await prisma.jobApplication.findFirst({
         where: { id: applicationId, userId: user.id },

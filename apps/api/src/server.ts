@@ -40,7 +40,15 @@ const app = Fastify({
 async function bootstrap() {
   // Plugins
   await app.register(cors, {
-    origin: process.env.NEXTAUTH_URL ?? 'http://localhost:3000',
+    origin: (origin, cb) => {
+      const allowed = process.env.NEXTAUTH_URL ?? 'http://localhost:3000'
+      // Allow web app, chrome extensions, and server-to-server (no origin)
+      if (!origin || origin === allowed || origin.startsWith('chrome-extension://')) {
+        cb(null, true)
+      } else {
+        cb(null, false)
+      }
+    },
     credentials: true,
   })
 

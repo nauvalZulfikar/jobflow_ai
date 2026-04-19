@@ -1,5 +1,80 @@
 import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus } from '../lib/api-client.js'
 
+// ---------------------------------------------------------------------------
+// Client-side apply — opens a tab in user's browser, uses content scripts
+// ---------------------------------------------------------------------------
+
+function waitForTabLoad(tabId, timeoutMs = 30000) {
+  return new Promise(resolve => {
+    const onUpdated = (id, info) => {
+      if (id === tabId && info.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(onUpdated)
+        resolve(true)
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated)
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      resolve(false)
+    }, timeoutMs)
+  })
+}
+
+function sendTabMessage(tabId, message, timeoutMs = 120000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('content_script_timeout')), timeoutMs)
+    chrome.tabs.sendMessage(tabId, message, response => {
+      clearTimeout(timer)
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message))
+      } else {
+        resolve(response)
+      }
+    })
+  })
+}
+
+async function applyViaClientSide(app, resumeData) {
+  const applyUrl = app.job?.applyUrl
+  const isLinkedIn = applyUrl?.includes('linkedin.com')
+  let tab = null
+
+  try {
+    tab = await chrome.tabs.create({ url: applyUrl, active: false })
+    await waitForTabLoad(tab.id)
+    // Let page JS settle
+    await new Promise(r => setTimeout(r, 3000))
+
+    let result
+    if (isLinkedIn) {
+      // Content script auto-injected via manifest for linkedin.com/jobs/*
+      result = await sendTabMessage(tab.id, {
+        action: 'APPLY_TO_JOB',
+        resumeData,
+      })
+    } else {
+      // Inject ATS content script dynamically
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['content/ats-apply.js'],
+      })
+      await new Promise(r => setTimeout(r, 1500))
+      result = await sendTabMessage(tab.id, {
+        action: 'ATS_APPLY',
+        resumeData,
+      })
+    }
+
+    return result || { status: 'failed', reason: 'no_response' }
+  } catch (err) {
+    return { status: 'failed', reason: err.message || 'client_apply_error' }
+  } finally {
+    if (tab?.id) {
+      try { await chrome.tabs.remove(tab.id) } catch {}
+    }
+  }
+}
+
 // Global error handlers — capture crash errors before service worker dies
 self.addEventListener('error', (event) => {
   const error = `${event.message} at ${event.filename}:${event.lineno}:${event.colno}`
@@ -69,6 +144,10 @@ async function addLog(msg) {
 }
 
 async function startAutoApply() {
+  // Prevent duplicate starts
+  const { isRunning } = await chrome.storage.local.get('isRunning')
+  if (isRunning) return
+
   // Clear logs from previous run
   sessionStartTime = Date.now()
   await setState({ logs: [] })
@@ -182,18 +261,33 @@ async function _processNextJob() {
   }
 
   let result
+  const isLinkedIn = applyUrl.includes('linkedin.com')
 
   try {
-    // Delegate to server-side GenericAI auto-apply
-    await addLog('  → Sending to server auto-apply...')
-    const triggerRes = await triggerServerAutoApply(app.id)
-
-    if (!triggerRes.success) {
-      const errMsg = triggerRes.error?.message || 'server_trigger_failed'
-      result = { status: 'failed', reason: errMsg }
+    if (isLinkedIn) {
+      // LinkedIn → client-side (server IP is blocked by LinkedIn)
+      await addLog('  → Client-side LinkedIn apply...')
+      result = await applyViaClientSide(app, resumeData)
     } else {
-      await addLog('  → Server processing... polling status')
-      result = await pollAutoApplyStatus(app.id, 120000)
+      // Non-LinkedIn → try server first, fallback to client-side ATS
+      await addLog('  → Sending to server auto-apply...')
+      const triggerRes = await triggerServerAutoApply(app.id)
+
+      if (!triggerRes.success) {
+        const errMsg = triggerRes.error?.code || 'unknown'
+        const errDetail = triggerRes.error?.message || ''
+        await addLog(`  ⚠️ Server rejected: ${errMsg} — ${errDetail}`)
+        await addLog('  → Falling back to client-side ATS...')
+        result = await applyViaClientSide(app, resumeData)
+      } else {
+        await addLog('  → Server processing... polling status')
+        result = await pollAutoApplyStatus(app.id, 120000)
+        // If server-side failed (e.g. Playwright error), try client-side
+        if (result.status === 'failed' && !isPermanentError(result.reason)) {
+          await addLog(`  ⚠️ Server failed: ${result.reason} — trying client-side...`)
+          result = await applyViaClientSide(app, resumeData)
+        }
+      }
     }
   } catch (err) {
     result = { status: 'failed', reason: err.message || 'unknown_error' }
