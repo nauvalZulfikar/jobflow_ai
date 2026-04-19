@@ -1,4 +1,4 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, pushExtensionLogs } from '../lib/api-client.js'
 
 // ---------------------------------------------------------------------------
 // Client-side apply — opens a tab in user's browser, uses content scripts
@@ -122,6 +122,76 @@ async function setState(updates) {
 }
 
 let sessionStartTime = null
+let currentAppId = null // tagged onto remote logs while processing a specific job
+
+// ---- Remote activity log (pushed to server DB) ----
+// logBuffer persists in chrome.storage.local so it survives SW restarts.
+const LOG_FLUSH_INTERVAL_MS = 8000
+const LOG_FLUSH_BATCH_SIZE = 50
+let logFlushTimer = null
+
+async function getActiveBatchId() {
+  const { activeBatchId } = await chrome.storage.local.get('activeBatchId')
+  return activeBatchId || null
+}
+
+async function generateBatchId() {
+  const id = (self.crypto && self.crypto.randomUUID) ? self.crypto.randomUUID() : `b-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  await chrome.storage.local.set({ activeBatchId: id })
+  return id
+}
+
+async function queueRemoteLog(message, level = 'info', applicationId = null) {
+  try {
+    const batchId = await getActiveBatchId()
+    if (!batchId) return
+    const { logBuffer = [] } = await chrome.storage.local.get('logBuffer')
+    logBuffer.push({
+      batchId,
+      level,
+      message,
+      applicationId: applicationId || currentAppId || null,
+      createdAt: new Date().toISOString(),
+    })
+    await chrome.storage.local.set({ logBuffer })
+    scheduleLogFlush(logBuffer.length >= LOG_FLUSH_BATCH_SIZE)
+  } catch {}
+}
+
+function scheduleLogFlush(immediate = false) {
+  if (immediate) {
+    if (logFlushTimer) { clearTimeout(logFlushTimer); logFlushTimer = null }
+    flushLogs()
+    return
+  }
+  if (logFlushTimer) return
+  logFlushTimer = setTimeout(() => {
+    logFlushTimer = null
+    flushLogs()
+  }, LOG_FLUSH_INTERVAL_MS)
+}
+
+async function flushLogs() {
+  try {
+    const { logBuffer = [] } = await chrome.storage.local.get('logBuffer')
+    if (logBuffer.length === 0) return
+    // Take up to 200 at a time (server limit)
+    const chunk = logBuffer.slice(0, 200)
+    const remaining = logBuffer.slice(chunk.length)
+    // Optimistically remove from buffer — if POST fails, drop (don't block pipeline)
+    await chrome.storage.local.set({ logBuffer: remaining })
+    const res = await pushExtensionLogs(chunk)
+    if (!res?.success) {
+      // Re-queue if network error and buffer isn't overflowing
+      if (res?.error?.code === 'NETWORK' && remaining.length < 500) {
+        const { logBuffer: latest = [] } = await chrome.storage.local.get('logBuffer')
+        await chrome.storage.local.set({ logBuffer: [...chunk, ...latest] })
+      }
+    }
+    // If there's still more, schedule another flush
+    if (remaining.length > 0) scheduleLogFlush()
+  } catch {}
+}
 
 function formatRuntime(ms) {
   const s = Math.floor(ms / 1000)
@@ -134,13 +204,15 @@ function formatRuntime(ms) {
   return `${h}h${rm}m${rs}s`
 }
 
-async function addLog(msg) {
+async function addLog(msg, meta = {}) {
   const { logs = [] } = await chrome.storage.local.get('logs')
   const time = new Date().toLocaleTimeString('id-ID')
   const runtime = sessionStartTime ? ` +${formatRuntime(Date.now() - sessionStartTime)}` : ''
   logs.push(`[${time}${runtime}] ${msg}`)
   if (logs.length > 50) logs.splice(0, logs.length - 50)
   await setState({ logs })
+  // Mirror to server DB (best-effort, buffered)
+  queueRemoteLog(msg, meta.level || 'info', meta.applicationId || null)
 }
 
 async function startAutoApply() {
@@ -148,9 +220,12 @@ async function startAutoApply() {
   const { isRunning } = await chrome.storage.local.get('isRunning')
   if (isRunning) return
 
-  // Clear logs from previous run
+  // Clear logs from previous run and start a fresh remote batch
   sessionStartTime = Date.now()
+  await chrome.storage.local.set({ logs: [], logBuffer: [] })
+  const batchId = await generateBatchId()
   await setState({ logs: [] })
+  await addLog(`Batch started: ${batchId}`)
   await addLog('Fetching applications & resume...')
 
   let applications, resumeData
@@ -200,6 +275,7 @@ async function startAutoApply() {
 async function stopAutoApply() {
   await setState({ isRunning: false })
   await addLog('Stopped by user')
+  scheduleLogFlush(true)
 }
 
 
@@ -240,7 +316,9 @@ async function _processNextJob() {
     }
 
     await setState({ isRunning: false, retryQueue: [] })
+    currentAppId = null
     await addLog(`Done! Applied: ${results.applied}, Skipped: ${results.skipped}, Failed: ${results.failed}`)
+    scheduleLogFlush(true) // flush immediately on session end
     return
   }
 
@@ -248,6 +326,7 @@ async function _processNextJob() {
   const jobTitle = app.job?.title || 'Unknown'
   const company = app.job?.company || ''
   const applyUrl = app.job?.applyUrl
+  currentAppId = app.id || null
 
   await addLog(`[${currentIndex + 1}/${queue.length}] ${jobTitle} @ ${company}`)
 
@@ -346,6 +425,8 @@ async function _processNextJob() {
     })
   } catch {}
 
+  currentAppId = null
+  scheduleLogFlush(true) // push logs to server after each job completes
   scheduleNext()
 }
 

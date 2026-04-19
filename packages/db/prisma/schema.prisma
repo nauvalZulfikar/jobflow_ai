@@ -337,6 +337,22 @@ model AutoApplyLog {
   createdAt DateTime         @default(now())
 }
 
+// ========== EXTENSION ACTIVITY ==========
+// Captures activity log from Chrome extension auto-apply runs.
+// One row per log line; batchId groups rows into a single auto-apply run.
+model ExtensionActivityLog {
+  id            String   @id @default(cuid())
+  userId        String
+  batchId       String
+  applicationId String?
+  level         String   @default("info") // "info" | "warn" | "error"
+  message       String   @db.Text
+  createdAt     DateTime @default(now())
+
+  @@index([userId, batchId, createdAt])
+  @@index([userId, createdAt])
+}
+
 // ========== INTERVIEW PREP ==========
 
 model StarStory {

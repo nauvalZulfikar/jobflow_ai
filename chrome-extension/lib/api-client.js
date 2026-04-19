@@ -153,6 +153,25 @@ export async function pollAutoApplyStatus(applicationId, maxWaitMs = 120000) {
   return { status: 'failed', reason: 'server_timeout' }
 }
 
+export async function pushExtensionLogs(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return { success: true, ignored: true }
+  const token = await getToken()
+  if (!token) return { success: false, error: { code: 'NO_TOKEN' } }
+  try {
+    const res = await fetch(`${API_BASE}/extension/logs`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ entries }),
+    })
+    return await res.json()
+  } catch (err) {
+    return { success: false, error: { code: 'NETWORK', message: err?.message || 'network' } }
+  }
+}
+
 export async function updateStatus(applicationId, status, notes) {
   const token = await getToken()
   const body = { status }

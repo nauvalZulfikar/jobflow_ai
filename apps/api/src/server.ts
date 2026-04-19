@@ -21,6 +21,7 @@ import { starStoryRoutes } from './routes/star-stories.js'
 import { billingRoutes } from './routes/billing.js'
 import { teamRoutes } from './routes/teams.js'
 import { autoApplyRoutes } from './routes/auto-apply.js'
+import { extensionRoutes } from './routes/extension.js'
 import { authMiddleware } from './middleware/auth.js'
 import { processFollowUpReminders } from './cron/follow-up.js'
 
@@ -89,6 +90,7 @@ async function bootstrap() {
   await app.register(billingRoutes, { prefix: '/api/billing' })
   await app.register(teamRoutes, { prefix: '/api/teams' })
   await app.register(autoApplyRoutes, { prefix: '/api/applications' })
+  await app.register(extensionRoutes, { prefix: '/api/extension' })
 
   // Health check
   app.get('/health', async () => ({ status: 'ok', timestamp: new Date().toISOString() }))
