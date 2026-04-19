@@ -220,11 +220,12 @@ async function startAutoApply() {
   const { isRunning } = await chrome.storage.local.get('isRunning')
   if (isRunning) return
 
-  // Clear logs from previous run and start a fresh remote batch
+  // Clear the popup-visible log and start a fresh remote batch.
+  // logBuffer is preserved — any tail entries from a prior batch still get flushed
+  // on the next interval tick so we don't lose data tagged with the old batchId.
   sessionStartTime = Date.now()
-  await chrome.storage.local.set({ logs: [], logBuffer: [] })
-  const batchId = await generateBatchId()
   await setState({ logs: [] })
+  const batchId = await generateBatchId()
   await addLog(`Batch started: ${batchId}`)
   await addLog('Fetching applications & resume...')
 
@@ -275,7 +276,6 @@ async function startAutoApply() {
 async function stopAutoApply() {
   await setState({ isRunning: false })
   await addLog('Stopped by user')
-  scheduleLogFlush(true)
 }
 
 
@@ -318,7 +318,6 @@ async function _processNextJob() {
     await setState({ isRunning: false, retryQueue: [] })
     currentAppId = null
     await addLog(`Done! Applied: ${results.applied}, Skipped: ${results.skipped}, Failed: ${results.failed}`)
-    scheduleLogFlush(true) // flush immediately on session end
     return
   }
 
@@ -426,7 +425,6 @@ async function _processNextJob() {
   } catch {}
 
   currentAppId = null
-  scheduleLogFlush(true) // push logs to server after each job completes
   scheduleNext()
 }
 
