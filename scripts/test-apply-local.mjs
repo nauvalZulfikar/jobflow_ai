@@ -69,7 +69,7 @@ const BROWSER_BOOTSTRAP = atsSource
     "return { status: 'failed', reason: err.message, stack: String(err.stack || '').slice(0, 1500) }"
   )
   + `
-window.__jobflowATS = { handleATSApply, fillForm, captureDomSnippet, executeFieldInstructions, executeAction, findSubmitButton }
+window.__jobflowATS = { handleATSApply, fillForm, captureDomSnippet, captureFormFields, executeFieldInstructions, executeAction, findSubmitButton }
 `
 
 async function callApi(path, body) {
@@ -159,13 +159,19 @@ async function main() {
       log('Trying Level 2: AI guide-form...')
       const screenshotBase64 = (await page.screenshot({ type: 'png' })).toString('base64')
       const domSnippet = await page.evaluate(() => window.__jobflowATS.captureDomSnippet(6000))
-      const guidance = await callApi('/auto-apply/guide-form', {
-        url: page.url(), screenshotBase64, domSnippet, resumeData,
+      // Match the new BROWSER_BOOTSTRAP exposure: window.__jobflowATS.captureFormFields
+      const formFields = await page.evaluate(() => {
+        try { return window.__jobflowATS.captureFormFields(40) } catch { return [] }
       })
-      log(`Guidance: ${JSON.stringify(guidance).slice(0, 400)}`)
+      log(`Sending ${formFields.length} structured form fields to AI`)
+      const guidance = await callApi('/auto-apply/guide-form', {
+        url: page.url(), screenshotBase64, domSnippet, formFields, resumeData,
+      })
+      log(`Guidance:\n${JSON.stringify(guidance, null, 2)}`)
       if (guidance?.fields?.length) {
         const fillRes = await page.evaluate(async fields => window.__jobflowATS.executeFieldInstructions(fields), guidance.fields)
         log(`Executed ${fillRes.filled}/${guidance.fields.length} fields (errors: ${fillRes.errors.length})`)
+        if (fillRes.errors.length) log(`Field errors: ${JSON.stringify(fillRes.errors)}`)
         if (guidance.submitSelector) {
           const ok = await page.evaluate(sel => { const b = document.querySelector(sel); if (!b) return false; b.click(); return true }, guidance.submitSelector)
           log(`Submit via guidance: ${ok ? 'clicked' : 'not found'}`)
@@ -180,8 +186,8 @@ async function main() {
       }
     }
 
-    // Level 3: agent loop
-    if (useAI && finalResult.status === 'failed') {
+    // Level 3: agent loop — also fire on needs_review since L2 didn't close it
+    if (useAI && (finalResult.status === 'failed' || finalResult.status === 'needs_review')) {
       log('Trying Level 3: agent loop (up to 6 steps)...')
       const history = []
       for (let step = 1; step <= 6; step++) {

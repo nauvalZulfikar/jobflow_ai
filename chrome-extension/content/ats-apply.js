@@ -673,6 +673,45 @@ function captureDomSnippet(maxLen = 8000) {
   return document.body?.innerHTML?.slice(0, maxLen) || ''
 }
 
+// Structured list of fillable fields, each with a real selector AI can use
+// without inventing one. This is the correct input shape for the AI guide.
+function captureFormFields(maxFields = 40) {
+  const seen = new Set()
+  const out = []
+  const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"]), textarea, select')
+  for (const el of inputs) {
+    if (out.length >= maxFields) break
+    if (el.offsetParent === null) continue
+    if (el.type === 'checkbox' || el.type === 'radio') continue
+    if (el.value && el.value.trim() && el.tagName !== 'SELECT') continue
+    if (el.tagName === 'SELECT' && el.selectedIndex > 0) continue
+
+    // Build a stable selector
+    let selector = ''
+    if (el.id && /^[A-Za-z][\w-]*$/.test(el.id)) selector = `#${el.id}`
+    else if (el.name) selector = `${el.tagName.toLowerCase()}[name="${CSS.escape(el.name)}"]`
+    else continue
+
+    if (seen.has(selector)) continue
+    seen.add(selector)
+
+    const label = getFieldLabel(el).slice(0, 120)
+    const required = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true'
+    const item = {
+      selector,
+      tag: el.tagName.toLowerCase(),
+      type: el.type || el.tagName.toLowerCase(),
+      label,
+      required,
+    }
+    if (el.tagName === 'SELECT') {
+      item.options = Array.from(el.options).slice(0, 30).map(o => ({ value: o.value, text: o.text.slice(0, 60) }))
+    }
+    out.push(item)
+  }
+  return out
+}
+
 async function executeFieldInstructions(fields) {
   let filled = 0
   const errors = []
@@ -734,7 +773,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
   if (message.action === 'GET_DOM_SNIPPET') {
-    sendResponse({ domSnippet: captureDomSnippet(message.maxLen || 8000), url: location.href })
+    sendResponse({
+      domSnippet: captureDomSnippet(message.maxLen || 8000),
+      formFields: captureFormFields(40),
+      url: location.href,
+    })
     return
   }
   if (message.action === 'EXECUTE_FIELDS') {

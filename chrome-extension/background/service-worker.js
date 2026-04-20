@@ -57,16 +57,20 @@ async function captureTabDom(tabId) {
 
 async function applyViaAIGuide(tabId, applyUrl, resumeData, priorResult) {
   try {
-    const [screenshotBase64, domSnippet] = await Promise.all([
-      captureTabScreenshot(tabId),
-      captureTabDom(tabId),
-    ])
+    const screenshotBase64 = await captureTabScreenshot(tabId)
+    const domInfo = await sendTabMessage(tabId, { action: 'GET_DOM_SNIPPET', maxLen: 6000 }, 10000).catch(() => ({}))
     const filledMatch = /(\d+)\/(\d+)\s*fields/.exec(priorResult?.reason || '')
     const filledCount = filledMatch ? Number(filledMatch[1]) : undefined
     const totalCount = filledMatch ? Number(filledMatch[2]) : undefined
 
     await addLog(`  🧠 AI guide-form: asking vision model for field map...`)
-    const guidance = await guideForm({ url: applyUrl, screenshotBase64, domSnippet, resumeData, filledCount, totalCount })
+    const guidance = await guideForm({
+      url: applyUrl,
+      screenshotBase64,
+      domSnippet: domInfo?.domSnippet,
+      formFields: domInfo?.formFields,
+      resumeData, filledCount, totalCount,
+    })
     if (!guidance?.fields || guidance.fields.length === 0) {
       await addLog(`  ⚠️ AI guide returned no fields${guidance?.unsure ? ` (${guidance.unsure})` : ''}`)
       return null

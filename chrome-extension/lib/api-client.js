@@ -167,14 +167,14 @@ export async function diagnoseFailure({ url, screenshotBase64, domSnippet, ruleB
   } catch { return null }
 }
 
-export async function guideForm({ url, screenshotBase64, domSnippet, resumeData, filledCount, totalCount }) {
+export async function guideForm({ url, screenshotBase64, domSnippet, formFields, resumeData, filledCount, totalCount }) {
   const token = await getToken()
   if (!token) return null
   try {
     const res = await fetch(`${API_BASE}/auto-apply/guide-form`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, screenshotBase64, domSnippet, resumeData, filledCount, totalCount }),
+      body: JSON.stringify({ url, screenshotBase64, domSnippet, formFields, resumeData, filledCount, totalCount }),
     })
     const json = await res.json()
     return json?.success ? json.data : null

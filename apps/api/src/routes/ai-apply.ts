@@ -17,6 +17,14 @@ type GuideFormBody = {
   url: string
   screenshotBase64?: string
   domSnippet?: string
+  formFields?: Array<{
+    selector: string
+    tag: string
+    type: string
+    label: string
+    required: boolean
+    options?: Array<{ value: string; text: string }>
+  }>
   resumeData: Record<string, string | number | null | undefined>
   filledCount?: number
   totalCount?: number
@@ -43,16 +51,23 @@ Reply with strict JSON:
 }`
 
 const GUIDE_SYSTEM = `You are a form-filling assistant looking at a job application form.
-Given a screenshot + DOM snippet + the user's resume data, produce CSS selectors + values to fill each unfilled field.
-Only include fields visible in the screenshot that the resume data has an answer for.
-Prefer id-based or name-based selectors. Skip CAPTCHAs and file uploads.
+You will be given:
+- A list of unfilled form fields, each with a CSS selector, label, type, and (for selects) options.
+- The user's resume data.
+You map each field to a value drawn from the resume.
+HARD RULES:
+- ONLY use selectors from the provided field list. NEVER invent selectors.
+- For SELECT fields, "value" must match one of the option values exactly.
+- Skip fields you cannot confidently map. Better to skip than to guess.
+- Skip file inputs (type=file) — those are handled separately.
+- For free-text screening questions without an obvious resume answer, skip them.
 Reply with strict JSON:
 {
   "fields": [
-    { "selector": "#first_name", "value": "Alex", "reason": "matches resume firstName" }
+    { "selector": "<one of the provided selectors>", "value": "<value>", "reason": "why" }
   ],
-  "submitSelector": "button[type=submit]" | null,
-  "unsure": "what you couldn't confidently map"
+  "submitSelector": "<best-guess submit selector or null>",
+  "unsure": "fields you skipped and why"
 }`
 
 const AGENT_SYSTEM = `You are an autonomous agent driving a browser to submit a job application.
@@ -122,9 +137,11 @@ export async function aiApplyRoutes(app: FastifyInstance) {
       const userText = [
         `Page URL: ${body.url}`,
         body.filledCount !== undefined ? `Rule-based filled ${body.filledCount}/${body.totalCount ?? '?'} fields.` : '',
-        `Resume data available (pick values from here, do not invent):\n${JSON.stringify(body.resumeData, null, 2)}`,
-        body.domSnippet ? `DOM snippet (forms only, truncated):\n${body.domSnippet.slice(0, 6000)}` : '',
-        'Return the JSON shape with fields[] + submitSelector. Only use resume values as sources.',
+        `Resume data (use ONLY these values):\n${JSON.stringify(body.resumeData, null, 2)}`,
+        body.formFields && body.formFields.length > 0
+          ? `Unfilled form fields (use ONLY these selectors):\n${JSON.stringify(body.formFields, null, 2)}`
+          : (body.domSnippet ? `DOM snippet:\n${body.domSnippet.slice(0, 4000)}` : ''),
+        'Return the JSON shape: fields[] using selectors from the list above + submitSelector + unsure.',
       ].filter(Boolean).join('\n\n')
 
       const guidance = await callVision(GUIDE_SYSTEM, userText, body.screenshotBase64, 800)
