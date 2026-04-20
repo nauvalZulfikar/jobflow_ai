@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { User, Mail, Shield, Bot, Clock, Link2, CheckCircle2, XCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { generateExtensionToken } from './actions'
 
 interface UserData {
   id: string
@@ -101,13 +102,12 @@ export function SettingsForm({ user, resumes, hasLinkedinCookie }: { user: UserD
   async function handleGenerateToken() {
     setGeneratingToken(true)
     try {
-      const res = await fetch('/api/users/me/extension-token', { method: 'POST' })
-      const json = await res.json()
-      if (json.success) {
-        setExtensionToken(json.data.token)
+      const result = await generateExtensionToken()
+      if (result.success) {
+        setExtensionToken(result.token)
         toast.success('Token dibuat')
       } else {
-        toast.error('Gagal membuat token')
+        toast.error(result.error)
       }
     } catch {
       toast.error('Gagal membuat token')
