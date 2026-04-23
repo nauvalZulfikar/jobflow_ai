@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify'
-import { openai, AI_MODEL } from '@jobflow/ai'
+import { openai, AI_MODEL, resolveExtensionFields, recoverExtensionField, findApplyButton } from '@jobflow/ai'
+import type { ExtensionField } from '@jobflow/ai'
 import { success, failure } from '@jobflow/shared'
 
 // Vision-capable model (gpt-4o-mini supports vision in chat completions)
@@ -38,6 +39,27 @@ type AgentStepBody = {
   resumeData: Record<string, string | number | null | undefined>
   maxStep: number
   currentStep: number
+}
+
+type DomStepBody = {
+  url: string
+  pageState: {
+    title: string
+    fields: Array<{
+      selector: string
+      type: string
+      label: string
+      value: string
+      required?: boolean
+      options?: Array<{ value: string; text: string }>
+    }>
+    buttons: Array<{ selector: string; text: string }>
+    bodyText: string
+  }
+  resumeData: Record<string, string>
+  history: Array<{ step: number; actions: any[]; results: any[] }>
+  currentStep: number
+  maxStep: number
 }
 
 const DIAGNOSE_SYSTEM = `You are a job-application failure diagnostician.
@@ -80,6 +102,30 @@ Reply with strict JSON — pick exactly one action:
 { "action": "fail", "reason": "why we should stop" }
 Prefer "done" the moment a confirmation ("thank you", "application submitted") appears. If stuck for 2+ steps, "fail".`
 
+const DOM_STEP_SYSTEM = `You are an autonomous agent filling a job application form.
+You receive the current page state: URL, form fields with their current values, available buttons, and visible page text.
+Your job is to fill empty fields and click the right button to advance the application.
+
+RULES:
+- Only fill fields that are empty or need correction (check "value" — if already filled, skip)
+- Use ONLY selectors from the provided fields/buttons list — never invent selectors
+- For SELECT: use exact option text from the options list
+- For custom-dropdown: use the option text as value
+- For EEOC fields (gender, race, ethnicity, disability, veteran): always select "decline" / "prefer not to say"
+- For work authorization / right to work: "Yes". For visa sponsorship required: "No"
+- After filling fields, include a click on the button that advances the form (Next, Continue, Review, Submit, etc)
+- If bodyText contains confirmation ("thank you", "application submitted", "berhasil", etc): return status "done"
+- If you see a login page or captcha or cannot proceed: return status "fail"
+
+Reply with strict JSON:
+{
+  "actions": [
+    { "action": "type"|"select"|"click"|"check", "selector": "...", "value": "..." }
+  ],
+  "status": "in_progress"|"done"|"fail",
+  "reason": "brief explanation"
+}`
+
 async function callVision(systemPrompt: string, userText: string, screenshotBase64?: string, maxTokens = 500) {
   const content: any[] = [{ type: 'text', text: userText }]
   if (screenshotBase64) {
@@ -103,6 +149,58 @@ async function callVision(systemPrompt: string, userText: string, screenshotBase
 }
 
 export async function aiApplyRoutes(app: FastifyInstance) {
+  // POST /api/auto-apply/find-button — AI picks which button to click on a job page
+  app.post('/find-button', async (request, reply) => {
+    try {
+      const { elements } = request.body as {
+        elements: { selector: string; text: string; ariaLabel: string }[]
+      }
+      if (!Array.isArray(elements) || elements.length === 0) {
+        return reply.send(success({ selector: null }))
+      }
+      const selector = await findApplyButton(elements)
+      return reply.send(success({ selector }))
+    } catch (err) {
+      request.log.error(err)
+      return reply.send(success({ selector: null }))
+    }
+  })
+
+  // POST /api/auto-apply/resolve-fields — AI field resolution from extension (no screenshot)
+  app.post('/resolve-fields', async (request, reply) => {
+    try {
+      const { fields, resumeData } = request.body as {
+        fields: ExtensionField[]
+        resumeData: Record<string, string>
+      }
+      if (!Array.isArray(fields) || fields.length === 0) {
+        return reply.send(success({ fields: [] }))
+      }
+      const resolved = await resolveExtensionFields(fields, resumeData)
+      return reply.send(success({ fields: resolved }))
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send(failure('SERVER_ERROR', 'Gagal resolve fields'))
+    }
+  })
+
+  // POST /api/auto-apply/recover-field — per-field AI recovery after executor error
+  app.post('/recover-field', async (request, reply) => {
+    try {
+      const { field, error, valueAttempted, resumeData } = request.body as {
+        field: ExtensionField
+        error: string
+        valueAttempted: string
+        resumeData: Record<string, string>
+      }
+      const recovery = await recoverExtensionField(field, error || 'unknown', valueAttempted || '', resumeData)
+      return reply.send(success(recovery))
+    } catch (err) {
+      request.log.error(err)
+      return reply.send(success(null))
+    }
+  })
+
   // POST /api/auto-apply/diagnose
   // Vision-based explanation of why the rule-based flow failed.
   app.post('/diagnose', async (request, reply) => {
@@ -182,6 +280,54 @@ export async function aiApplyRoutes(app: FastifyInstance) {
     } catch (err) {
       request.log.error(err)
       return reply.status(500).send(failure('SERVER_ERROR', 'Agent-step failed'))
+    }
+  })
+
+  // POST /api/auto-apply/dom-step
+  // DOM-based agent step — no screenshot, reads structured page state instead
+  app.post('/dom-step', async (request, reply) => {
+    try {
+      const body = request.body as DomStepBody
+      if (!body?.url || !body?.pageState) {
+        return reply.status(400).send(failure('BAD_REQUEST', 'url + pageState required'))
+      }
+
+      const historyText = (body.history || [])
+        .slice(-5)
+        .map((h, i) => `  Step ${h.step}: ${h.actions?.map((a: any) => `${a.action} ${a.selector}`).join(', ')}`)
+        .join('\n') || '  (no prior actions)'
+
+      const userText = [
+        `URL: ${body.url}`,
+        `Page title: ${body.pageState.title}`,
+        `Step ${body.currentStep}/${body.maxStep}`,
+        `\nResume data:\n${JSON.stringify(body.resumeData, null, 2)}`,
+        `\nForm fields (with current values):\n${JSON.stringify(body.pageState.fields, null, 2)}`,
+        `\nVisible buttons:\n${JSON.stringify(body.pageState.buttons, null, 2)}`,
+        `\nPage text (first 1500 chars):\n${body.pageState.bodyText}`,
+        `\nHistory:\n${historyText}`,
+      ].join('\n')
+
+      const res = await openai.chat.completions.create({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: DOM_STEP_SYSTEM },
+          { role: 'user', content: userText },
+        ],
+        max_tokens: 800,
+        response_format: { type: 'json_object' },
+      })
+
+      const text = res.choices[0]?.message?.content
+      if (!text) return reply.send(success({ actions: [], status: 'fail', reason: 'no_response' }))
+      try {
+        return reply.send(success(JSON.parse(text)))
+      } catch {
+        return reply.send(success({ actions: [], status: 'fail', reason: 'invalid_json' }))
+      }
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send(failure('SERVER_ERROR', 'Dom-step failed'))
     }
   })
 }

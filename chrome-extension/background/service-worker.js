@@ -1,7 +1,8 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, pushExtensionLogs, diagnoseFailure, guideForm, agentStep } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs } from '../lib/api-client.js'
+import { API_BASE } from '../lib/config.js'
 
 // ---------------------------------------------------------------------------
-// Client-side apply — opens a tab in user's browser, uses content scripts
+// Client-side apply — opens a tab, injects agent.js, runs DOM-based AI loop
 // ---------------------------------------------------------------------------
 
 function waitForTabLoad(tabId, timeoutMs = 30000) {
@@ -20,190 +21,81 @@ function waitForTabLoad(tabId, timeoutMs = 30000) {
   })
 }
 
-function sendTabMessage(tabId, message, timeoutMs = 120000) {
+function sendTabMessage(tabId, message, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('content_script_timeout')), timeoutMs)
     chrome.tabs.sendMessage(tabId, message, response => {
       clearTimeout(timer)
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message))
-      } else {
-        resolve(response)
-      }
+      if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message))
+      else resolve(response)
     })
   })
 }
 
-// ---- AI helpers ----
-
-async function captureTabScreenshot(tabId) {
+async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
+  // Upload resume first if available
   try {
-    const tab = await chrome.tabs.get(tabId)
-    if (!tab.active) {
-      await chrome.tabs.update(tabId, { active: true })
-      await new Promise(r => setTimeout(r, 600))
-    }
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' })
-    return dataUrl?.replace(/^data:image\/png;base64,/, '') || null
-  } catch { return null }
-}
+    await sendTabMessage(tabId, { action: 'UPLOAD_RESUME', resumeUrl: resumeData.resumeUrl }, 15000)
+  } catch {}
 
-async function captureTabDom(tabId) {
-  try {
-    const res = await sendTabMessage(tabId, { action: 'GET_DOM_SNIPPET', maxLen: 8000 }, 10000)
-    return res?.domSnippet || ''
-  } catch { return '' }
-}
-
-async function applyViaAIGuide(tabId, applyUrl, resumeData, priorResult) {
-  try {
-    const screenshotBase64 = await captureTabScreenshot(tabId)
-    const domInfo = await sendTabMessage(tabId, { action: 'GET_DOM_SNIPPET', maxLen: 6000 }, 10000).catch(() => ({}))
-    const filledMatch = /(\d+)\/(\d+)\s*fields/.exec(priorResult?.reason || '')
-    const filledCount = filledMatch ? Number(filledMatch[1]) : undefined
-    const totalCount = filledMatch ? Number(filledMatch[2]) : undefined
-
-    await addLog(`  🧠 AI guide-form: asking vision model for field map...`)
-    const guidance = await guideForm({
-      url: applyUrl,
-      screenshotBase64,
-      domSnippet: domInfo?.domSnippet,
-      formFields: domInfo?.formFields,
-      resumeData, filledCount, totalCount,
-    })
-    if (!guidance?.fields || guidance.fields.length === 0) {
-      await addLog(`  ⚠️ AI guide returned no fields${guidance?.unsure ? ` (${guidance.unsure})` : ''}`)
-      return null
-    }
-
-    const fillRes = await sendTabMessage(tabId, { action: 'EXECUTE_FIELDS', fields: guidance.fields }, 60000)
-    await addLog(`  🧠 AI filled ${fillRes?.filled || 0}/${guidance.fields.length} fields`)
-
-    if (guidance.submitSelector) {
-      await new Promise(r => setTimeout(r, 1500))
-      const clickRes = await sendTabMessage(tabId, { action: 'CLICK_SUBMIT', selector: guidance.submitSelector }, 15000)
-      if (clickRes?.ok) {
-        await new Promise(r => setTimeout(r, 4000))
-        return { status: 'applied', reason: `ai_guide_submit (${fillRes?.filled || 0} fields)` }
-      }
-    }
-    return { status: 'needs_review', reason: `ai_guide: filled ${fillRes?.filled || 0}, no submit` }
-  } catch (err) {
-    return { status: 'failed', reason: `ai_guide_error: ${err.message || err}` }
-  }
-}
-
-async function applyViaAgent(tabId, applyUrl, resumeData, maxSteps = 6) {
   const history = []
+
   for (let step = 1; step <= maxSteps; step++) {
-    const screenshotBase64 = await captureTabScreenshot(tabId)
-    if (!screenshotBase64) {
-      return { status: 'failed', reason: 'agent: screenshot_failed' }
+    let pageState
+    try {
+      pageState = await sendTabMessage(tabId, { action: 'GET_PAGE_STATE' }, 20000)
+    } catch (err) {
+      return { status: 'failed', reason: `get_page_state_failed: ${err.message}` }
     }
-    const decision = await agentStep({
-      url: applyUrl,
-      screenshotBase64,
-      goal: 'Submit this job application using the provided resume data.',
-      history,
-      resumeData,
-      maxStep: maxSteps,
-      currentStep: step,
-    })
-    if (!decision?.action) {
-      return { status: 'failed', reason: 'agent: no_decision' }
-    }
-    await addLog(`  🤖 Agent step ${step}/${maxSteps}: ${decision.action} ${decision.selector ? `(${decision.selector})` : ''}`)
+    if (!pageState) return { status: 'failed', reason: 'no_page_state' }
 
-    if (decision.action === 'done') {
-      return { status: 'applied', reason: `agent_done: ${decision.reason || ''}` }
+    await addLog(`  🤖 Step ${step}/${maxSteps} — ${pageState.fields.length} fields, ${pageState.buttons.map(b => b.text).join(' | ')}`)
+
+    const decision = await domStep({ url: applyUrl, pageState, resumeData, history, currentStep: step, maxStep: maxSteps })
+
+    if (!decision) return { status: 'failed', reason: 'agent: no_decision' }
+    if (decision.status === 'done') return { status: 'applied', reason: decision.reason || 'agent_done' }
+    if (decision.status === 'fail') return { status: 'failed', reason: decision.reason || 'agent_fail' }
+
+    if (decision.actions?.length > 0) {
+      const prevUrl = (await chrome.tabs.get(tabId)).url
+      const results = await sendTabMessage(tabId, { action: 'EXECUTE_ACTIONS', actions: decision.actions }, 15000).catch(() => [])
+      history.push({ step, actions: decision.actions, results })
+
+      // If the page navigated (e.g. external ATS redirect), re-inject agent.js
+      await new Promise(r => setTimeout(r, 1500))
+      const newUrl = (await chrome.tabs.get(tabId)).url
+      if (newUrl !== prevUrl) {
+        await addLog(`  ↪ Navigated to ${new URL(newUrl).hostname} — re-injecting agent`)
+        await waitForTabLoad(tabId)
+        await chrome.scripting.executeScript({ target: { tabId }, func: (base) => { window.__jobflowApiBase = base }, args: [API_BASE] })
+        await chrome.scripting.executeScript({ target: { tabId }, files: ['content/agent.js'] })
+        await new Promise(r => setTimeout(r, 1000))
+      }
+    } else {
+      await new Promise(r => setTimeout(r, 1500))
     }
-    if (decision.action === 'fail') {
-      return { status: 'failed', reason: `agent_gaveup: ${decision.reason || ''}` }
-    }
-    if (decision.action === 'wait') {
-      await new Promise(r => setTimeout(r, Math.min(Math.max(Number(decision.ms) || 1500, 200), 10000)))
-      history.push({ action: `wait ${decision.ms || 1500}ms`, reason: decision.reason || '', ok: true })
-      continue
-    }
-    const res = await sendTabMessage(tabId, { action: 'EXECUTE_ACTION', step: decision }, 15000)
-    history.push({
-      action: `${decision.action} ${decision.selector || ''}${decision.value ? '=' + String(decision.value).slice(0, 20) : ''}`,
-      reason: decision.reason || '',
-      ok: !!res?.ok,
-    })
-    await new Promise(r => setTimeout(r, 1200))
   }
-  return { status: 'failed', reason: 'agent: max_steps_reached' }
-}
 
-async function runDiagnose(tabId, applyUrl, ruleBasedReason, attempted) {
-  try {
-    const [screenshotBase64, domSnippet] = await Promise.all([
-      captureTabScreenshot(tabId),
-      captureTabDom(tabId),
-    ])
-    return await diagnoseFailure({ url: applyUrl, screenshotBase64, domSnippet, ruleBasedReason, attempted })
-  } catch { return null }
+  return { status: 'needs_review', reason: 'agent: max_steps_reached' }
 }
 
 async function applyViaClientSide(app, resumeData) {
   const applyUrl = app.job?.applyUrl
-  const isLinkedIn = applyUrl?.includes('linkedin.com')
   let tab = null
 
   try {
     tab = await chrome.tabs.create({ url: applyUrl, active: false })
     await waitForTabLoad(tab.id)
-    // Let page JS settle
-    await new Promise(r => setTimeout(r, 3000))
+    await chrome.tabs.update(tab.id, { active: true })
+    await new Promise(r => setTimeout(r, 2000))
 
-    let result
-    let attempted = isLinkedIn ? 'linkedin_easy_apply' : 'ats_form'
-    if (isLinkedIn) {
-      // Content script auto-injected via manifest for linkedin.com/jobs/*
-      result = await sendTabMessage(tab.id, {
-        action: 'APPLY_TO_JOB',
-        resumeData,
-      })
-    } else {
-      // Inject ATS content script dynamically
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['content/ats-apply.js'],
-      })
-      await new Promise(r => setTimeout(r, 1500))
-      result = await sendTabMessage(tab.id, {
-        action: 'ATS_APPLY',
-        resumeData,
-      })
-    }
+    // Inject universal agent script, pass API_BASE so it doesn't need import
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (base) => { window.__jobflowApiBase = base }, args: [API_BASE] })
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/agent.js'] })
+    await new Promise(r => setTimeout(r, 1000))
 
-    // Level 2: AI-guided form filling if the ATS rule-based filler didn't close it
-    if (!isLinkedIn && result && (result.status === 'needs_review' || (result.status === 'failed' && !isPermanentError(result.reason)))) {
-      const guided = await applyViaAIGuide(tab.id, applyUrl, resumeData, result)
-      if (guided && guided.status === 'applied') {
-        attempted = 'ai_guide'
-        result = guided
-      } else if (guided && guided.status === 'needs_review' && result.status === 'failed') {
-        result = guided
-      }
-    }
-
-    // Level 3: Agent loop — last-resort for non-LinkedIn failures
-    if (!isLinkedIn && result && result.status === 'failed' && !isPermanentError(result.reason)) {
-      const agented = await applyViaAgent(tab.id, applyUrl, resumeData, 6)
-      if (agented && (agented.status === 'applied' || agented.status === 'needs_review')) {
-        attempted = 'agent'
-        result = agented
-      }
-    }
-
-    // Level 1: diagnose whatever we ended up with (only if still failed)
-    if (result && result.status === 'failed') {
-      const diagnosis = await runDiagnose(tab.id, applyUrl, result.reason, attempted)
-      if (diagnosis) result.diagnosis = diagnosis
-    }
-
+    const result = await runApplyAgent(tab.id, applyUrl, resumeData, 20)
     return result || { status: 'failed', reason: 'no_response' }
   } catch (err) {
     return { status: 'failed', reason: err.message || 'client_apply_error' }
@@ -226,6 +118,8 @@ self.addEventListener('unhandledrejection', (event) => {
   const stack = reason instanceof Error ? reason.stack || '' : ''
   chrome.storage.session.set({ lastCrashError: { error, stack, timestamp: Date.now() } })
 })
+
+const LAST_UPDATED = '2026-04-23 11:15'
 
 const JOB_DELAY_MIN = 30000
 const JOB_DELAY_MAX = 90000
@@ -263,11 +157,7 @@ async function setState(updates) {
 let sessionStartTime = null
 let currentAppId = null // tagged onto remote logs while processing a specific job
 
-// ---- Remote activity log (pushed to server DB) ----
-// logBuffer persists in chrome.storage.local so it survives SW restarts.
-const LOG_FLUSH_INTERVAL_MS = 8000
-const LOG_FLUSH_BATCH_SIZE = 50
-let logFlushTimer = null
+// ---- Permanent activity log (stored locally, never flushed) ----
 
 async function getActiveBatchId() {
   const { activeBatchId } = await chrome.storage.local.get('activeBatchId')
@@ -284,7 +174,6 @@ async function queueRemoteLog(message, level = 'info', applicationId = null, met
   try {
     const batchId = await getActiveBatchId()
     if (!batchId) return
-    const { logBuffer = [] } = await chrome.storage.local.get('logBuffer')
     const entry = {
       batchId,
       level,
@@ -293,44 +182,7 @@ async function queueRemoteLog(message, level = 'info', applicationId = null, met
       createdAt: new Date().toISOString(),
     }
     if (metadata) entry.metadata = metadata
-    logBuffer.push(entry)
-    await chrome.storage.local.set({ logBuffer })
-    scheduleLogFlush(logBuffer.length >= LOG_FLUSH_BATCH_SIZE)
-  } catch {}
-}
-
-function scheduleLogFlush(immediate = false) {
-  if (immediate) {
-    if (logFlushTimer) { clearTimeout(logFlushTimer); logFlushTimer = null }
-    flushLogs()
-    return
-  }
-  if (logFlushTimer) return
-  logFlushTimer = setTimeout(() => {
-    logFlushTimer = null
-    flushLogs()
-  }, LOG_FLUSH_INTERVAL_MS)
-}
-
-async function flushLogs() {
-  try {
-    const { logBuffer = [] } = await chrome.storage.local.get('logBuffer')
-    if (logBuffer.length === 0) return
-    // Take up to 200 at a time (server limit)
-    const chunk = logBuffer.slice(0, 200)
-    const remaining = logBuffer.slice(chunk.length)
-    // Optimistically remove from buffer — if POST fails, drop (don't block pipeline)
-    await chrome.storage.local.set({ logBuffer: remaining })
-    const res = await pushExtensionLogs(chunk)
-    if (!res?.success) {
-      // Re-queue if network error and buffer isn't overflowing
-      if (res?.error?.code === 'NETWORK' && remaining.length < 500) {
-        const { logBuffer: latest = [] } = await chrome.storage.local.get('logBuffer')
-        await chrome.storage.local.set({ logBuffer: [...chunk, ...latest] })
-      }
-    }
-    // If there's still more, schedule another flush
-    if (remaining.length > 0) scheduleLogFlush()
+    pushExtensionLogs([entry]).catch(() => {})
   } catch {}
 }
 
@@ -361,9 +213,6 @@ async function startAutoApply() {
   const { isRunning } = await chrome.storage.local.get('isRunning')
   if (isRunning) return
 
-  // Clear the popup-visible log and start a fresh remote batch.
-  // logBuffer is preserved — any tail entries from a prior batch still get flushed
-  // on the next interval tick so we don't lose data tagged with the old batchId.
   sessionStartTime = Date.now()
   await setState({ logs: [] })
   const batchId = await generateBatchId()
@@ -480,28 +329,23 @@ async function _processNextJob() {
   }
 
   let result
-  const isLinkedIn = applyUrl.includes('linkedin.com')
 
   try {
+    const isLinkedIn = applyUrl.includes('linkedin.com')
     if (isLinkedIn) {
-      // LinkedIn → client-side (server IP is blocked by LinkedIn)
-      await addLog('  → Client-side LinkedIn apply...')
+      // LinkedIn blocks server IP — always client-side
+      await addLog('  → Client-side apply (LinkedIn)...')
       result = await applyViaClientSide(app, resumeData)
     } else {
-      // Non-LinkedIn → try server first, fallback to client-side ATS
+      // Non-LinkedIn — try server first, fallback to client-side
       await addLog('  → Sending to server auto-apply...')
       const triggerRes = await triggerServerAutoApply(app.id)
-
       if (!triggerRes.success) {
-        const errMsg = triggerRes.error?.code || 'unknown'
-        const errDetail = triggerRes.error?.message || ''
-        await addLog(`  ⚠️ Server rejected: ${errMsg} — ${errDetail}`)
-        await addLog('  → Falling back to client-side ATS...')
+        await addLog(`  ⚠️ Server rejected: ${triggerRes.error?.code || 'unknown'} — falling back to client-side...`)
         result = await applyViaClientSide(app, resumeData)
       } else {
         await addLog('  → Server processing... polling status')
         result = await pollAutoApplyStatus(app.id, 120000)
-        // If server-side failed (e.g. Playwright error), try client-side
         if (result.status === 'failed' && !isPermanentError(result.reason)) {
           await addLog(`  ⚠️ Server failed: ${result.reason} — trying client-side...`)
           result = await applyViaClientSide(app, resumeData)
@@ -683,7 +527,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
   if (message.action === 'GET_STATE') {
-    getState().then(sendResponse)
+    getState().then(state => sendResponse({ ...state, lastUpdated: LAST_UPDATED }))
     return true
   }
 })

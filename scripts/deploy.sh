@@ -3,7 +3,7 @@ set -e
 
 echo "=== JobFlow AI Deploy ==="
 
-APP_DIR="/opt/jobflow"
+APP_DIR="/root/projects/jobflow"
 cd $APP_DIR
 
 if [ ! -f .env ]; then

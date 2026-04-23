@@ -1,4 +1,4 @@
-const API_BASE = 'https://jobflow.aureonforge.com/api'
+import { API_BASE } from './config.js'
 
 async function getToken() {
   const { apiToken } = await chrome.storage.local.get('apiToken')
@@ -78,23 +78,32 @@ export async function fetchResumeData() {
   return resume
 }
 
-export async function detectFormViaVision(screenshotBase64, pageUrl) {
+export async function resolveFields({ fields, resumeData, url }) {
   const token = await getToken()
+  if (!token) return []
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/vision-detect`, {
+    const res = await fetch(`${API_BASE}/auto-apply/resolve-fields`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ screenshot: screenshotBase64, url: pageUrl }),
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields, resumeData, url }),
     })
     const json = await res.json()
-    if (json.success && json.data) return json.data // { submitSelector, fields[] }
-    return null
-  } catch {
-    return null
-  }
+    return json?.success ? (json.data?.fields ?? []) : []
+  } catch { return [] }
+}
+
+export async function recoverField({ field, error, valueAttempted, resumeData }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/recover-field`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field, error, valueAttempted, resumeData }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
 }
 
 export async function checkLinkedInSession() {
@@ -167,14 +176,28 @@ export async function diagnoseFailure({ url, screenshotBase64, domSnippet, ruleB
   } catch { return null }
 }
 
-export async function guideForm({ url, screenshotBase64, domSnippet, formFields, resumeData, filledCount, totalCount }) {
+export async function guideForm({ url, domSnippet, formFields, resumeData, filledCount, totalCount }) {
   const token = await getToken()
   if (!token) return null
   try {
     const res = await fetch(`${API_BASE}/auto-apply/guide-form`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url, screenshotBase64, domSnippet, formFields, resumeData, filledCount, totalCount }),
+      body: JSON.stringify({ url, domSnippet, formFields, resumeData, filledCount, totalCount }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
+export async function domStep({ url, pageState, resumeData, history, currentStep, maxStep }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/dom-step`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, pageState, resumeData, history, currentStep, maxStep }),
     })
     const json = await res.json()
     return json?.success ? json.data : null

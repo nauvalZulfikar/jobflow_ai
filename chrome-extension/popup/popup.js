@@ -30,7 +30,8 @@ function updateUI() {
   chrome.runtime.sendMessage({ action: 'GET_STATE' }, state => {
     if (chrome.runtime.lastError || !state) return
 
-    const { isRunning, queue = [], currentIndex = 0, results = {}, logs = [], retryQueue = [] } = state
+    const { isRunning, queue = [], currentIndex = 0, results = {}, logs = [], retryQueue = [], lastUpdated } = state
+    if (lastUpdated) $('last-updated').textContent = `updated ${lastUpdated}`
     const total = queue.length
     const progress = total > 0 ? Math.round((currentIndex / total) * 100) : 0
 
