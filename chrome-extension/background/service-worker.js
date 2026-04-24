@@ -32,6 +32,24 @@ function sendTabMessage(tabId, message, timeoutMs = 30000) {
   })
 }
 
+// Compressed viewport capture (JPEG quality 40 → typically 30-80KB)
+async function captureTabScreenshot(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId)
+    if (!tab?.windowId) { await addLog(`  📸 capture: no windowId`); return null }
+    // Ensure tab is focused/active so captureVisibleTab can see it
+    try { await chrome.windows.update(tab.windowId, { focused: true }) } catch {}
+    try { await chrome.tabs.update(tabId, { active: true }) } catch {}
+    await new Promise(r => setTimeout(r, 400))
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 40 })
+    await addLog(`  📸 capture: ${dataUrl ? Math.round(dataUrl.length / 1024) + 'KB' : 'empty'}`)
+    return dataUrl || null
+  } catch (err) {
+    await addLog(`  📸 capture failed: ${err.message}`)
+    return null
+  }
+}
+
 async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
   // Upload resume first if available
   try {
@@ -39,27 +57,67 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
   } catch {}
 
   const history = []
+  // Per-attempt documentation (pushed as metadata on a single log entry at end of job)
+  const qa = []  // { step, label, value, source, selector }
+  let confirmationScreenshot = null
+  let lastSeenPageState = null
 
   for (let step = 1; step <= maxSteps; step++) {
     let pageState
     try {
       pageState = await sendTabMessage(tabId, { action: 'GET_PAGE_STATE' }, 20000)
     } catch (err) {
-      return { status: 'failed', reason: `get_page_state_failed: ${err.message}` }
+      return { status: 'failed', reason: `get_page_state_failed: ${err.message}`, doc: { qa, lastSeenPageState } }
     }
-    if (!pageState) return { status: 'failed', reason: 'no_page_state' }
+    if (!pageState) return { status: 'failed', reason: 'no_page_state', doc: { qa, lastSeenPageState } }
+    lastSeenPageState = pageState
 
     await addLog(`  🤖 Step ${step}/${maxSteps} — ${pageState.fields.length} fields, ${pageState.buttons.map(b => b.text).join(' | ')}`)
 
     const decision = await domStep({ url: applyUrl, pageState, resumeData, history, currentStep: step, maxStep: maxSteps })
 
-    if (decision.status === 'done') return { status: 'applied', reason: decision.reason || 'agent_done' }
-    if (decision.status === 'fail') return { status: 'failed', reason: `agent: ${decision.reason || 'fail'}` }
+    // Record Q&A for this step (match action.selector to field label)
+    if (decision.actions?.length > 0) {
+      const fieldBySelector = new Map(pageState.fields.map(f => [f.selector, f]))
+      for (const a of decision.actions) {
+        if (a.action === 'type' || a.action === 'select' || a.action === 'check') {
+          const f = fieldBySelector.get(a.selector)
+          qa.push({
+            step,
+            label: f?.label || a.selector,
+            value: String(a.value ?? (a.action === 'check' ? 'checked' : '')),
+            selector: a.selector,
+            source: a.source || 'ai',
+          })
+        }
+      }
+    }
+
+    if (decision.status === 'done') {
+      confirmationScreenshot = await captureTabScreenshot(tabId)
+      return { status: 'applied', reason: decision.reason || 'agent_done', doc: { qa, lastSeenPageState, confirmationScreenshot } }
+    }
+    if (decision.status === 'fail') return { status: 'failed', reason: `agent: ${decision.reason || 'fail'}`, doc: { qa, lastSeenPageState } }
 
     if (decision.actions?.length > 0) {
       const prevUrl = (await chrome.tabs.get(tabId)).url
       const results = await sendTabMessage(tabId, { action: 'EXECUTE_ACTIONS', actions: decision.actions }, 15000).catch(() => [])
       history.push({ step, actions: decision.actions, results })
+
+      // Detect Submit click: capture screenshot immediately after, then wait for confirmation
+      const clickedSubmit = decision.actions.some(a =>
+        a.action === 'click' && pageState.buttons.some(b =>
+          b.selector === a.selector && /submit application|send application|submit my application/i.test(b.text)
+        )
+      )
+
+      if (clickedSubmit) {
+        // Give LinkedIn/ATS time to render confirmation before the modal auto-closes
+        await new Promise(r => setTimeout(r, 3500))
+        confirmationScreenshot = await captureTabScreenshot(tabId)
+        // Treat as success — LinkedIn closes modal quickly, next scan would miss confirmation
+        return { status: 'applied', reason: 'submit_clicked', doc: { qa, lastSeenPageState, confirmationScreenshot } }
+      }
 
       // If the page navigated (e.g. external ATS redirect), re-inject agent.js
       await new Promise(r => setTimeout(r, 1500))
@@ -76,21 +134,14 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
     }
   }
 
-  return { status: 'needs_review', reason: 'agent: max_steps_reached' }
-}
-
-// LinkedIn SPA: /jobs/view/X/ doesn't open the Easy Apply modal on click when
-// driven programmatically. Navigate directly to the apply route instead.
-function rewriteLinkedInApplyUrl(url) {
-  try {
-    const m = url.match(/^(https:\/\/www\.linkedin\.com\/jobs\/view\/\d+)\/?(\?.*)?$/i)
-    if (!m) return url
-    return `${m[1]}/apply/?openSDUIApplyFlow=true`
-  } catch { return url }
+  return { status: 'needs_review', reason: 'agent: max_steps_reached', doc: { qa, lastSeenPageState } }
 }
 
 async function applyViaClientSide(app, resumeData) {
-  const applyUrl = rewriteLinkedInApplyUrl(app.job?.applyUrl)
+  // Use the original applyUrl — let the agent detect Easy Apply vs external-redirect
+  // and click the appropriate anchor. agent.js's anchor click uses window.location.href
+  // which navigates properly for both LinkedIn SPA (opens /apply/ modal) and external ATS.
+  const applyUrl = app.job?.applyUrl
   let tab = null
 
   try {
@@ -373,7 +424,24 @@ async function _processNextJob() {
   if (result.status === 'applied') {
     await updateStatus(app.id, 'applied')
     results.applied++
-    await addLog(`  ✅ Applied${result.reason ? ` (${result.reason})` : ''}`)
+    // Documentation bundle: questions/answers, confirmation screenshot, resume used
+    const doc = result.doc || {}
+    await addLog(`  ✅ Applied${result.reason ? ` (${result.reason})` : ''}`, {
+      metadata: {
+        kind: 'apply_attempt',
+        jobTitle,
+        company,
+        applyUrl,
+        finalUrl: doc.lastSeenPageState?.url || applyUrl,
+        questions: (doc.qa || []).slice(0, 40),
+        resumeUsed: {
+          url: resumeData?.resumeUrl || null,
+          firstName: resumeData?.firstName, lastName: resumeData?.lastName,
+          email: resumeData?.email,
+        },
+        confirmationScreenshot: doc.confirmationScreenshot || null,
+      },
+    })
   } else if (result.status === 'needs_review') {
     // Needs review = user intervention required, don't retry
     await updateStatus(app.id, 'saved', `[auto-apply skip] ${result.reason || 'unknown'}`)

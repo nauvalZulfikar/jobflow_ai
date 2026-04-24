@@ -211,6 +211,11 @@ async function executeActions(actions) {
             el.checked = true
             el.dispatchEvent(new Event('change', { bubbles: true }))
           }
+        } else if (el.tagName === 'A' && el.href) {
+          // Anchor with href: SPA click handlers (LinkedIn, etc) often swallow programmatic
+          // clicks. Navigating via location.href triggers a proper page load — this works for
+          // both LinkedIn Easy Apply (loads /apply/ page with modal) and external ATS redirects.
+          window.location.href = el.href
         } else {
           el.click()
         }

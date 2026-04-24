@@ -106,8 +106,10 @@ const DOM_STEP_SYSTEM = `You are an autonomous agent filling a job application f
 You receive the current page state: URL, form fields with their current values, available buttons, visible page text, and a flag "modalOpen" indicating whether an apply modal/dialog is open.
 
 STAGE DETECTION (critical — decide which stage you are in first):
-- modalOpen=false AND URL looks like /jobs/view/ or a job-post landing page → Stage 1: OPEN APPLY. Find a button whose text is "Easy Apply", "Apply", "Apply now", "Lamar", "Lamar sekarang" and click it. Do NOT try to fill form fields on this page — there usually are none.
-- LinkedIn-specific: the Easy Apply button has class "jobs-apply-button" and aria-label starts with "Easy Apply to". Click that one, NOT the "Save job" or "Apply on company site" buttons.
+- modalOpen=false AND URL looks like /jobs/view/ or a job-post landing page → Stage 1: OPEN APPLY. Find a button/anchor whose text is "Easy Apply", "Apply", "Apply now", "Apply on company site", "Lamar", "Lamar sekarang" and click it. Do NOT try to fill form fields on this page — there usually are none. The extension will follow the navigation (to LinkedIn Easy Apply modal OR to the external company ATS) and re-scan.
+- PREFER "Easy Apply" over "Apply on company site" if both are present (easier flow).
+- On LinkedIn: the Easy Apply anchor has aria-label starting with "Easy Apply to". "Apply on company site" opens an external ATS.
+- IGNORE "Save job", "Save the job", "Follow", "Share", "More options", "Close" — not apply buttons.
 - modalOpen=true OR the page has an actual form with >1 field and buttons like "Next"/"Submit"/"Review" → Stage 2: FILL FORM.
 - bodyText contains "thank you", "application submitted", "berhasil dikirim", "sudah dilamar", or equivalent → status "done".
 
