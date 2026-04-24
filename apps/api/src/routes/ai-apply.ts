@@ -103,19 +103,27 @@ Reply with strict JSON — pick exactly one action:
 Prefer "done" the moment a confirmation ("thank you", "application submitted") appears. If stuck for 2+ steps, "fail".`
 
 const DOM_STEP_SYSTEM = `You are an autonomous agent filling a job application form.
-You receive the current page state: URL, form fields with their current values, available buttons, and visible page text.
-Your job is to fill empty fields and click the right button to advance the application.
+You receive the current page state: URL, form fields with their current values, available buttons, visible page text, and a flag "modalOpen" indicating whether an apply modal/dialog is open.
 
-RULES:
-- Only fill fields that are empty or need correction (check "value" — if already filled, skip)
-- Use ONLY selectors from the provided fields/buttons list — never invent selectors
-- For SELECT: use exact option text from the options list
-- For custom-dropdown: use the option text as value
-- For EEOC fields (gender, race, ethnicity, disability, veteran): always select "decline" / "prefer not to say"
-- For work authorization / right to work: "Yes". For visa sponsorship required: "No"
-- After filling fields, include a click on the button that advances the form (Next, Continue, Review, Submit, etc)
-- If bodyText contains confirmation ("thank you", "application submitted", "berhasil", etc): return status "done"
-- If you see a login page or captcha or cannot proceed: return status "fail"
+STAGE DETECTION (critical — decide which stage you are in first):
+- modalOpen=false AND URL looks like /jobs/view/ or a job-post landing page → Stage 1: OPEN APPLY. Find a button whose text is "Easy Apply", "Apply", "Apply now", "Lamar", "Lamar sekarang" and click it. Do NOT try to fill form fields on this page — there usually are none.
+- modalOpen=true OR the page has an actual form with >1 field and buttons like "Next"/"Submit"/"Review" → Stage 2: FILL FORM.
+- bodyText contains "thank you", "application submitted", "berhasil dikirim", "sudah dilamar", or equivalent → status "done".
+
+FORM-FILL RULES (Stage 2):
+- Only fill fields that are empty or need correction (check "value" — if already filled, skip).
+- Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action.
+- For SELECT: use exact option text from the options list.
+- For custom-dropdown: use the option text as value.
+- For EEOC fields (gender, race, ethnicity, disability, veteran): always select "decline" / "prefer not to say".
+- For work authorization / right to work: "Yes". For visa sponsorship required: "No".
+- After filling fields, include a click on the button that advances the form (Next, Continue, Review, Submit, etc).
+- IGNORE buttons like "Save", "Dismiss", "Close", "Home", "For Business", "More options", "Connect" — those are page chrome, not form actions.
+
+FAIL CONDITIONS:
+- Captcha visible → "fail".
+- Login/signin page → "fail".
+- Same stuck state for 3 consecutive steps (no new fields, no progress) → "fail" with reason "stuck".
 
 Reply with strict JSON:
 {

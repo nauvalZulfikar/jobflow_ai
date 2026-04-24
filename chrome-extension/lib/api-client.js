@@ -192,16 +192,20 @@ export async function guideForm({ url, domSnippet, formFields, resumeData, fille
 
 export async function domStep({ url, pageState, resumeData, history, currentStep, maxStep }) {
   const token = await getToken()
-  if (!token) return null
+  if (!token) return { actions: [], status: 'fail', reason: 'no_token' }
   try {
     const res = await fetch(`${API_BASE}/auto-apply/dom-step`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, pageState, resumeData, history, currentStep, maxStep }),
     })
+    if (!res.ok) return { actions: [], status: 'fail', reason: `http_${res.status}` }
     const json = await res.json()
-    return json?.success ? json.data : null
-  } catch { return null }
+    if (!json?.success) return { actions: [], status: 'fail', reason: json?.error?.code || 'api_error' }
+    return json.data
+  } catch (err) {
+    return { actions: [], status: 'fail', reason: `network: ${err?.message || 'unknown'}` }
+  }
 }
 
 export async function agentStep({ url, screenshotBase64, goal, history, resumeData, maxStep, currentStep }) {

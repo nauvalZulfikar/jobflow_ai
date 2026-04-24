@@ -53,9 +53,8 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
 
     const decision = await domStep({ url: applyUrl, pageState, resumeData, history, currentStep: step, maxStep: maxSteps })
 
-    if (!decision) return { status: 'failed', reason: 'agent: no_decision' }
     if (decision.status === 'done') return { status: 'applied', reason: decision.reason || 'agent_done' }
-    if (decision.status === 'fail') return { status: 'failed', reason: decision.reason || 'agent_fail' }
+    if (decision.status === 'fail') return { status: 'failed', reason: `agent: ${decision.reason || 'fail'}` }
 
     if (decision.actions?.length > 0) {
       const prevUrl = (await chrome.tabs.get(tabId)).url

@@ -59,18 +59,51 @@ function getLabel(el) {
   return el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || ''
 }
 
+// Detect the active modal/dialog — if open, scope scan to it (ignores page chrome)
+function findScopeRoot() {
+  const modalSelectors = [
+    '[role="dialog"][aria-modal="true"]',
+    '[role="dialog"]',
+    '.artdeco-modal',
+    '[class*="jobs-easy-apply"]',
+    '[class*="easy-apply-modal"]',
+    '[class*="Modal"][class*="open"]',
+  ]
+  for (const sel of modalSelectors) {
+    const el = document.querySelector(sel)
+    if (el && el.offsetParent !== null) return el
+  }
+  return document
+}
+
+// True if an element is LinkedIn/nav chrome we should ignore
+function isChrome(el) {
+  if (el.closest('nav, header, footer, [role="navigation"], [role="banner"]')) return true
+  // LinkedIn-specific class-based nav (uses <div class="global-nav">, not <nav>)
+  const chromeClassRx = /(^|\s)(global-nav|top-bar|site-header|app-header|artdeco-nav|artdeco-pill|header-bar)(\s|$|__|--)/i
+  let p = el
+  for (let i = 0; i < 8 && p; i++) {
+    if (p.className && typeof p.className === 'string' && chromeClassRx.test(p.className)) return true
+    p = p.parentElement
+  }
+  return false
+}
+
 async function getPageState() {
   await scrollToReveal()
 
   const fields = []
   const buttons = []
   const seen = new Set()
+  const root = findScopeRoot()
+  const modalOpen = root !== document
 
   // Native form fields
-  for (const el of document.querySelectorAll(
+  for (const el of root.querySelectorAll(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]), textarea, select'
   )) {
     if (el.offsetParent === null) continue
+    if (!modalOpen && isChrome(el)) continue
     const selector = getSelector(el)
     if (!selector || seen.has(selector)) continue
     seen.add(selector)
@@ -89,8 +122,9 @@ async function getPageState() {
   }
 
   // Custom dropdowns
-  for (const el of document.querySelectorAll('[role="combobox"]:not(select), [aria-haspopup="listbox"]:not(select)')) {
+  for (const el of root.querySelectorAll('[role="combobox"]:not(select), [aria-haspopup="listbox"]:not(select)')) {
     if (el.offsetParent === null) continue
+    if (!modalOpen && isChrome(el)) continue
     const selector = getSelector(el)
     if (!selector || seen.has(selector)) continue
     seen.add(selector)
@@ -102,10 +136,10 @@ async function getPageState() {
     })
   }
 
-  // Visible buttons — exclude navigation/header/footer noise
-  for (const el of document.querySelectorAll('button, input[type="submit"], [role="button"]')) {
+  // Visible buttons — scoped to modal if open, else filter nav chrome
+  for (const el of root.querySelectorAll('button, input[type="submit"], [role="button"]')) {
     if (el.disabled || el.offsetParent === null) continue
-    if (el.closest('nav, header, footer, [role="navigation"], [role="banner"]')) continue
+    if (!modalOpen && isChrome(el)) continue
     const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim()
     if (!text || text.length > 100) continue
     const selector = getSelector(el)
@@ -119,7 +153,8 @@ async function getPageState() {
     title: document.title.slice(0, 100),
     fields,
     buttons,
-    bodyText: document.body.innerText.slice(0, 1500),
+    bodyText: (modalOpen ? root.innerText : document.body.innerText).slice(0, 1500),
+    modalOpen,
   }
 }
 
