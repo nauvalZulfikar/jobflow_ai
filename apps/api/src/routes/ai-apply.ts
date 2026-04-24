@@ -114,8 +114,12 @@ STAGE DETECTION (critical — decide which stage you are in first):
 - bodyText contains "thank you", "application submitted", "berhasil dikirim", "sudah dilamar", or equivalent → status "done".
 
 FORM-FILL RULES (Stage 2):
-- COMPARE every field's current "value" with resumeData. If the pre-filled value is outdated, wrong, or doesn't match resumeData, OVERWRITE it with the correct value. Do NOT trust pre-filled values blindly — LinkedIn often pre-fills with stale data from prior applications. Example: if "value": "+44 7776638756" but resumeData.phone is "081234567890", emit a "type" action to fix it.
-- Only SKIP a pre-filled field if the value exactly matches what resumeData says (or is clearly the same data in a different format, e.g. "(62) 812-345-6789" vs "081234567890").
+- COMPARE every field's current "value" with resumeData.
+  • If pre-filled value is WRONG/STALE and resumeData has a NON-EMPTY correct value → emit "type"/"select" to overwrite. Example: pre-fill "+44 7776638756" but resumeData.phone is "081234567890" → fix it.
+  • If pre-filled value is ALREADY correct → skip.
+  • If resumeData has NO value for this field (empty string, null, missing) → LEAVE the pre-filled value ALONE. Do NOT blank it out, do NOT overwrite with a guess.
+- SALARY / EXPECTED COMPENSATION questions: if resumeData doesn't have an explicit salary figure, SKIP this field entirely (no "type" action). Never answer "0" — that looks insulting to recruiters. Leave blank; the user will review later.
+- Free-text essay questions ("Tell us why", "Describe your experience"): SKIP unless resumeData.summary has directly-relevant content. Never fabricate.
 - Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action. Common invented selectors to AVOID: input[name='phone'], input[name='email'], input[name='location']. If you don't see a matching entry in the fields[] array, the field does not exist.
 - For SELECT: use exact option text from the options list.
 - SKILL-YEARS QUESTIONS ("How many years of experience do you have with X?"):
@@ -382,6 +386,64 @@ export async function aiApplyRoutes(app: FastifyInstance) {
             if (!covered) {
               parsed.actions.unshift({ action: 'type', selector: s.selector, value: String(s.suggestedYears) })
             }
+          }
+        }
+
+        // Post-process: strip actions the AI shouldn't have emitted (rule violations).
+        // Deterministic because gpt-4o-mini sometimes ignores "skip this field" instructions.
+        if (Array.isArray(parsed.actions)) {
+          const fieldBySelector = new Map(body.pageState.fields.map(f => [f.selector, f]))
+          const resumeAny = (body.resumeData as any) || {}
+          const hasSalary = !!resumeAny.salary
+          const hasSummary = !!resumeAny.summary && String(resumeAny.summary).length > 40
+          const stripped: string[] = []
+          parsed.actions = parsed.actions.filter((a: any) => {
+            if (a?.action !== 'type' && a?.action !== 'select') return true
+            const f = fieldBySelector.get(a.selector)
+            if (!f) return true
+            const label = String(f.label || '').toLowerCase()
+            // Salary/compensation: skip unless resume explicitly has a salary figure
+            if (/\b(salary|compensation|expected pay|gaji|rate expectation|desired salary)\b/.test(label) && !hasSalary) {
+              stripped.push(`${a.selector} (salary without data)`)
+              return false
+            }
+            // Free-text essays: skip unless we have a summary AND AI's answer looks non-fabricated
+            if (/\b(why do you want|tell us|describe your|cover letter|motivation|what makes you|in your own words)\b/.test(label) && !hasSummary) {
+              stripped.push(`${a.selector} (essay without summary)`)
+              return false
+            }
+            // Prevent hallucination: if label maps to a known resumeData field AND that field is empty,
+            // the AI has no basis to fill it. Strip the action.
+            const labelToResumeKey: Array<[RegExp, string]> = [
+              [/\b(first\s*name|given\s*name|nama\s*depan)\b/i, 'firstName'],
+              [/\b(last\s*name|surname|family\s*name|nama\s*belakang)\b/i, 'lastName'],
+              [/\b(email|e-mail|alamat\s*email)\b/i, 'email'],
+              [/\b(phone|mobile|tel(ephone)?|whatsapp|nomor\s*hp|handphone)\b/i, 'phone'],
+              [/\b(location|city|address|kota|alamat)\b/i, 'location'],
+              [/\b(linkedin(\s*url)?|profil\s*linkedin)\b/i, 'linkedin'],
+              [/\b(github|portfolio|personal\s*website)\b/i, 'github'],
+            ]
+            for (const [rx, key] of labelToResumeKey) {
+              if (rx.test(label) && a.action === 'type') {
+                const resumeVal = String(resumeAny[key] ?? '').trim()
+                if (!resumeVal) {
+                  stripped.push(`${a.selector} (hallucinated ${key}; resume has empty value)`)
+                  return false
+                }
+              }
+            }
+            // Also: if pre-filled value exists and AI is trying to blank/zero it, keep pre-fill
+            if (a.action === 'type' && f.value && f.value.length > 0) {
+              const v = String(a.value ?? '').trim()
+              if (v === '' || v === '0' || v === 'N/A' || v.toLowerCase() === 'n/a') {
+                stripped.push(`${a.selector} (would blank out pre-fill)`)
+                return false
+              }
+            }
+            return true
+          })
+          if (stripped.length > 0) {
+            parsed.reason = `${parsed.reason || ''} [stripped: ${stripped.join('; ')}]`.trim()
           }
         }
         return reply.send(success(parsed))

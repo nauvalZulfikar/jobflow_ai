@@ -65,14 +65,16 @@ export async function fetchResumeData() {
       const pi = content.personalInfo || {}
       const exps = Array.isArray(content.experience) ? content.experience : []
       const totalYears = computeTotalYears(exps)
+      // Fallback location from most recent experience if personalInfo.location empty
+      const fallbackLocation = pi.location || exps[0]?.location || ''
       resume = {
         firstName: pi.firstName || user.name?.split(' ')[0] || '',
         lastName: pi.lastName || user.name?.split(' ').slice(1).join(' ') || '',
         fullName: `${pi.firstName || ''} ${pi.lastName || ''}`.trim() || user.name || '',
         email: pi.email || user.email || '',
         phone: pi.phone || '',
-        location: pi.location || '',
-        city: pi.location?.split(',')[0]?.trim() || '',
+        location: fallbackLocation,
+        city: fallbackLocation.split(',')[0]?.trim() || '',
         country: 'Indonesia',
         linkedin: pi.linkedinUrl || '',
         github: pi.githubUrl || '',
