@@ -5,6 +5,32 @@ async function getToken() {
   return apiToken
 }
 
+// Sum months across experience entries (overlapping ranges counted once)
+function computeTotalYears(experience) {
+  if (!Array.isArray(experience) || experience.length === 0) return 0
+  const parseMonth = (s) => {
+    if (!s) return null
+    const t = String(s).toLowerCase()
+    if (t === 'present' || t === 'current' || t === 'now') return Date.now()
+    const d = new Date(s)
+    return isNaN(d.getTime()) ? null : d.getTime()
+  }
+  const ranges = experience
+    .map(e => [parseMonth(e.startDate), parseMonth(e.endDate) ?? Date.now()])
+    .filter(([a, b]) => a != null && b != null && b > a)
+    .sort((x, y) => x[0] - y[0])
+  if (ranges.length === 0) return 0
+  // Merge overlapping ranges
+  let merged = [ranges[0].slice()]
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1]
+    if (ranges[i][0] <= last[1]) last[1] = Math.max(last[1], ranges[i][1])
+    else merged.push(ranges[i].slice())
+  }
+  const totalMs = merged.reduce((acc, [a, b]) => acc + (b - a), 0)
+  return Math.max(0, Math.round(totalMs / (365.25 * 24 * 3600 * 1000)))
+}
+
 export async function fetchSavedApplications() {
   const token = await getToken()
   const res = await fetch(`${API_BASE}/applications`, {
@@ -37,6 +63,8 @@ export async function fetchResumeData() {
       const defaultResume = resumeJson.data.find(r => r.isDefault) || resumeJson.data[0]
       const content = defaultResume.content || {}
       const pi = content.personalInfo || {}
+      const exps = Array.isArray(content.experience) ? content.experience : []
+      const totalYears = computeTotalYears(exps)
       resume = {
         firstName: pi.firstName || user.name?.split(' ')[0] || '',
         lastName: pi.lastName || user.name?.split(' ').slice(1).join(' ') || '',
@@ -51,9 +79,21 @@ export async function fetchResumeData() {
         portfolio: pi.portfolioUrl || '',
         summary: pi.summary || '',
         resumeUrl: defaultResume.fileUrl || null,
-        currentCompany: content.experience?.[0]?.company || '',
-        currentTitle: content.experience?.[0]?.title || '',
-        yearsExp: String(content.experience?.length || 0),
+        currentCompany: exps[0]?.company || '',
+        currentTitle: exps[0]?.title || '',
+        yearsExp: String(totalYears),
+        skills: Array.isArray(content.skills) ? content.skills : [],
+        experience: exps.slice(0, 5).map(e => ({
+          title: e.title || '',
+          company: e.company || '',
+          startDate: e.startDate || '',
+          endDate: e.endDate || 'Present',
+        })),
+        education: (Array.isArray(content.education) ? content.education : []).slice(0, 3).map(e => ({
+          school: e.school || '',
+          degree: e.degree || '',
+          field: e.field || '',
+        })),
         coverLetter: '',
         salary: '',
         address: pi.location || '',

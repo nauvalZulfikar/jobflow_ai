@@ -79,8 +79,18 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
   return { status: 'needs_review', reason: 'agent: max_steps_reached' }
 }
 
+// LinkedIn SPA: /jobs/view/X/ doesn't open the Easy Apply modal on click when
+// driven programmatically. Navigate directly to the apply route instead.
+function rewriteLinkedInApplyUrl(url) {
+  try {
+    const m = url.match(/^(https:\/\/www\.linkedin\.com\/jobs\/view\/\d+)\/?(\?.*)?$/i)
+    if (!m) return url
+    return `${m[1]}/apply/?openSDUIApplyFlow=true`
+  } catch { return url }
+}
+
 async function applyViaClientSide(app, resumeData) {
-  const applyUrl = app.job?.applyUrl
+  const applyUrl = rewriteLinkedInApplyUrl(app.job?.applyUrl)
   let tab = null
 
   try {

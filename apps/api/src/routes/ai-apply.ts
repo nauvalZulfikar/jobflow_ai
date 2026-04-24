@@ -107,13 +107,20 @@ You receive the current page state: URL, form fields with their current values, 
 
 STAGE DETECTION (critical — decide which stage you are in first):
 - modalOpen=false AND URL looks like /jobs/view/ or a job-post landing page → Stage 1: OPEN APPLY. Find a button whose text is "Easy Apply", "Apply", "Apply now", "Lamar", "Lamar sekarang" and click it. Do NOT try to fill form fields on this page — there usually are none.
+- LinkedIn-specific: the Easy Apply button has class "jobs-apply-button" and aria-label starts with "Easy Apply to". Click that one, NOT the "Save job" or "Apply on company site" buttons.
 - modalOpen=true OR the page has an actual form with >1 field and buttons like "Next"/"Submit"/"Review" → Stage 2: FILL FORM.
 - bodyText contains "thank you", "application submitted", "berhasil dikirim", "sudah dilamar", or equivalent → status "done".
 
 FORM-FILL RULES (Stage 2):
 - Only fill fields that are empty or need correction (check "value" — if already filled, skip).
-- Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action.
+- Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action. Common invented selectors to AVOID: input[name='phone'], input[name='email'], input[name='location']. If you don't see a matching entry in the fields[] array, the field does not exist.
 - For SELECT: use exact option text from the options list.
+- SKILL-YEARS QUESTIONS ("How many years of experience do you have with X?"):
+  • FIRST: scan resumeData.skills array. Normalize (lowercase, trim) and check if the question's skill X matches ANY entry (exact or partial substring either direction).
+  • IF MATCH: you MUST answer a number ≥ 1, capped at resumeData.yearsExp. Use max(2, yearsExp) for tech skills found in the array. **Never answer 0 for a skill that IS in the skills array.**
+  • IF NO MATCH (skill not in array at all): answer "0".
+  • You MUST fill ALL empty skill-year questions in the current page — never leave any blank. LinkedIn form validation requires every field filled.
+  • Never exceed resumeData.yearsExp. Never answer blank.
 - For custom-dropdown: use the option text as value.
 - For EEOC fields (gender, race, ethnicity, disability, veteran): always select "decline" / "prefer not to say".
 - For work authorization / right to work: "Yes". For visa sponsorship required: "No".
@@ -124,6 +131,7 @@ FAIL CONDITIONS:
 - Captcha visible → "fail".
 - Login/signin page → "fail".
 - Same stuck state for 3 consecutive steps (no new fields, no progress) → "fail" with reason "stuck".
+- modalOpen=false AND no button with text matching Apply/Easy Apply/Lamar → "fail" with reason "no_apply_mechanism". This job likely redirects off-platform and cannot be auto-applied.
 
 Reply with strict JSON:
 {
@@ -305,16 +313,42 @@ export async function aiApplyRoutes(app: FastifyInstance) {
         .map((h, i) => `  Step ${h.step}: ${h.actions?.map((a: any) => `${a.action} ${a.selector}`).join(', ')}`)
         .join('\n') || '  (no prior actions)'
 
+      // Server-side preprocessing: for "years of experience with X" questions,
+      // compute a deterministic answer from resumeData.skills + yearsExp so the AI
+      // doesn't default to 0 on skills that are clearly listed.
+      const skills = Array.isArray((body.resumeData as any)?.skills) ? (body.resumeData as any).skills as string[] : []
+      const skillsLower = skills.map(s => String(s || '').toLowerCase().trim()).filter(Boolean)
+      const yearsExp = Math.max(1, Number((body.resumeData as any)?.yearsExp) || 1)
+      const suggestions: Array<{ selector: string; label: string; suggestedYears: number; reason: string }> = []
+      for (const f of body.pageState.fields) {
+        const label = String(f.label || '').trim()
+        // Match "years ... with <skill>?" — take everything after the LAST "with "
+        const withMatch = label.match(/\bwith\s+([A-Za-z][A-Za-z0-9 +/.&\-]+?)\s*\??$/i)
+        const yearsCheck = /years?\b.*\bexperience|experience\b.*\byears?|how many years/i.test(label)
+        if (!withMatch || !yearsCheck) continue
+        const skill = withMatch[1].trim().toLowerCase()
+        const inSkills = skillsLower.some(s => s === skill || s.includes(skill) || skill.includes(s))
+        suggestions.push({
+          selector: f.selector,
+          label,
+          suggestedYears: inSkills ? yearsExp : 0,
+          reason: inSkills ? `matched skill in resumeData.skills (${yearsExp}y total exp)` : 'skill not in resume',
+        })
+      }
+
       const userText = [
         `URL: ${body.url}`,
         `Page title: ${body.pageState.title}`,
         `Step ${body.currentStep}/${body.maxStep}`,
         `\nResume data:\n${JSON.stringify(body.resumeData, null, 2)}`,
+        suggestions.length > 0
+          ? `\nPRE-COMPUTED skill-year answers (USE THESE EXACT VALUES):\n${JSON.stringify(suggestions, null, 2)}`
+          : '',
         `\nForm fields (with current values):\n${JSON.stringify(body.pageState.fields, null, 2)}`,
         `\nVisible buttons:\n${JSON.stringify(body.pageState.buttons, null, 2)}`,
         `\nPage text (first 1500 chars):\n${body.pageState.bodyText}`,
         `\nHistory:\n${historyText}`,
-      ].join('\n')
+      ].filter(Boolean).join('\n')
 
       const res = await openai.chat.completions.create({
         model: AI_MODEL,
@@ -329,7 +363,25 @@ export async function aiApplyRoutes(app: FastifyInstance) {
       const text = res.choices[0]?.message?.content
       if (!text) return reply.send(success({ actions: [], status: 'fail', reason: 'no_response' }))
       try {
-        return reply.send(success(JSON.parse(text)))
+        const parsed = JSON.parse(text)
+        // Deterministic override: for any skill-year question we pre-computed, force the value
+        // regardless of what the AI chose. Fixes gpt-4o-mini inconsistency on multi-skill pages.
+        if (suggestions.length > 0 && Array.isArray(parsed.actions)) {
+          const sugMap = new Map(suggestions.map(s => [s.selector, s.suggestedYears]))
+          for (const a of parsed.actions) {
+            if (a?.action === 'type' && sugMap.has(a.selector)) {
+              a.value = String(sugMap.get(a.selector))
+            }
+          }
+          // Ensure any skill-year field the AI skipped gets filled too
+          for (const s of suggestions) {
+            const covered = parsed.actions.some((a: any) => a?.selector === s.selector && a?.action === 'type')
+            if (!covered) {
+              parsed.actions.unshift({ action: 'type', selector: s.selector, value: String(s.suggestedYears) })
+            }
+          }
+        }
+        return reply.send(success(parsed))
       } catch {
         return reply.send(success({ actions: [], status: 'fail', reason: 'invalid_json' }))
       }

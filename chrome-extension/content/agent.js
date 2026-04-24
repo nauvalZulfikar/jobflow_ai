@@ -59,7 +59,9 @@ function getLabel(el) {
   return el.placeholder || el.getAttribute('aria-label') || el.getAttribute('name') || ''
 }
 
-// Detect the active modal/dialog — if open, scope scan to it (ignores page chrome)
+// Detect the active scope for scanning. Returns { root, modalOpen }.
+// Priority: open modal/dialog (apply form) > LinkedIn detail panel > whole document.
+// modalOpen=true means an actual apply-form dialog is shown (not just a detail panel).
 function findScopeRoot() {
   const modalSelectors = [
     '[role="dialog"][aria-modal="true"]',
@@ -71,9 +73,15 @@ function findScopeRoot() {
   ]
   for (const sel of modalSelectors) {
     const el = document.querySelector(sel)
-    if (el && el.offsetParent !== null) return el
+    if (el && el.offsetParent !== null) return { root: el, modalOpen: true }
   }
-  return document
+  // No modal open — try LinkedIn detail panel so we ignore the job-list sidebar
+  const detailSelectors = ['.jobs-details', '.scaffold-layout__detail']
+  for (const sel of detailSelectors) {
+    const el = document.querySelector(sel)
+    if (el && el.offsetParent !== null) return { root: el, modalOpen: false }
+  }
+  return { root: document, modalOpen: false }
 }
 
 // True if an element is LinkedIn/nav chrome we should ignore
@@ -95,15 +103,15 @@ async function getPageState() {
   const fields = []
   const buttons = []
   const seen = new Set()
-  const root = findScopeRoot()
-  const modalOpen = root !== document
+  const { root, modalOpen } = findScopeRoot()
+  const scoped = root !== document
 
   // Native form fields
   for (const el of root.querySelectorAll(
     'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="file"]), textarea, select'
   )) {
     if (el.offsetParent === null) continue
-    if (!modalOpen && isChrome(el)) continue
+    if (!scoped && isChrome(el)) continue
     const selector = getSelector(el)
     if (!selector || seen.has(selector)) continue
     seen.add(selector)
@@ -124,7 +132,7 @@ async function getPageState() {
   // Custom dropdowns
   for (const el of root.querySelectorAll('[role="combobox"]:not(select), [aria-haspopup="listbox"]:not(select)')) {
     if (el.offsetParent === null) continue
-    if (!modalOpen && isChrome(el)) continue
+    if (!scoped && isChrome(el)) continue
     const selector = getSelector(el)
     if (!selector || seen.has(selector)) continue
     seen.add(selector)
@@ -136,12 +144,17 @@ async function getPageState() {
     })
   }
 
-  // Visible buttons — scoped to modal if open, else filter nav chrome
-  for (const el of root.querySelectorAll('button, input[type="submit"], [role="button"]')) {
+  // Visible buttons — scoped to modal if open, else filter nav chrome.
+  // Include <a> with aria-label or role="button" — modern LinkedIn UI renders Apply as <a>.
+  for (const el of root.querySelectorAll(
+    'button, input[type="submit"], [role="button"], a[aria-label], a[role="button"]'
+  )) {
     if (el.disabled || el.offsetParent === null) continue
-    if (!modalOpen && isChrome(el)) continue
+    if (!scoped && isChrome(el)) continue
     const text = (el.textContent || el.value || el.getAttribute('aria-label') || '').trim()
     if (!text || text.length > 100) continue
+    // Skip anchors that are just navigation links (no aria-label and no explicit button role)
+    if (el.tagName === 'A' && !el.getAttribute('aria-label') && el.getAttribute('role') !== 'button') continue
     const selector = getSelector(el)
     if (!selector || seen.has(selector)) continue
     seen.add(selector)
@@ -186,7 +199,21 @@ async function executeActions(actions) {
       if (el.offsetParent === null) { results.push({ ok: false, selector: act.selector, reason: 'hidden' }); continue }
 
       if (act.action === 'click') {
-        el.click()
+        // Radio/checkbox inputs in LinkedIn-style forms: the visible UI is rendered on a label,
+        // not the input itself. Clicking the raw input doesn't trigger the handler.
+        if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) {
+          const label = el.id
+            ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)
+            : el.closest('label')
+          if (label && label.offsetParent !== null) label.click()
+          else el.click()
+          if (!el.checked) {
+            el.checked = true
+            el.dispatchEvent(new Event('change', { bubbles: true }))
+          }
+        } else {
+          el.click()
+        }
         results.push({ ok: true })
 
       } else if (act.action === 'type') {
