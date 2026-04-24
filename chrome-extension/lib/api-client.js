@@ -283,6 +283,48 @@ export async function pushExtensionLogs(entries) {
   }
 }
 
+// Fetch runtime recipes (url → {skipSite, overrides}) for a given apply URL
+export async function fetchRecipes(url) {
+  const token = await getToken()
+  if (!token) return []
+  try {
+    const res = await fetch(`${API_BASE}/self-heal/recipes?url=${encodeURIComponent(url)}`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    const json = await res.json()
+    return json?.success ? (json.data?.recipes || []) : []
+  } catch { return [] }
+}
+
+// Report a stuck/failed job with context; returns { failureId }
+export async function captureFailure({ batchId, applicationId, url, reason, historySnippet, domSnippet, screenshot }) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/self-heal/capture`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batchId, applicationId, url, reason, historySnippet, domSnippet, screenshot }),
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
+// Trigger AI diagnosis for a captured failure; returns { diagnosis, recipeId }
+export async function diagnoseFailureById(failureId) {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/self-heal/diagnose/${failureId}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
 export async function updateStatus(applicationId, status, notes) {
   const token = await getToken()
   const body = { status }

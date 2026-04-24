@@ -354,6 +354,47 @@ model ExtensionActivityLog {
   @@index([userId, createdAt])
 }
 
+// ========== AUTO-APPLY SELF-HEAL ==========
+// Captured when the agent gets stuck on a page. Sent to the AI diagnoser,
+// which can auto-generate an ApplyRecipe to skip/patch the url pattern next time.
+model AutoApplyFailure {
+  id             String   @id @default(cuid())
+  userId         String
+  batchId        String?
+  applicationId  String?
+  url            String
+  hostPattern    String   // derived hostname + path for matching (linkedin.com/jobs/view/*)
+  reason         String   // "no_apply_mechanism" | "stuck" | "max_steps_reached" | etc.
+  historySnippet Json?    // {pageState, actions[], aiDecisions[]} of last 3 steps
+  domSnippet     String?  @db.Text
+  screenshot     String?  @db.Text   // data URL (JPEG, compressed)
+  diagnosis      Json?    // {rootCause, fixCategory, suggestedFix, confidence, skipForNow}
+  recipeId       String?  // if a recipe was auto-generated for this
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([hostPattern])
+}
+
+// A runtime directive telling the agent how to handle pages matching urlPattern.
+// Generated automatically from AutoApplyFailure.diagnosis when confidence is high enough,
+// or authored manually by the user.
+model ApplyRecipe {
+  id          String   @id @default(cuid())
+  userId      String?  // null = global recipe (applies to all users)
+  urlPattern  String   // regex or simple wildcard; matched against applyUrl host+path
+  skipSite    Boolean  @default(false)
+  overrides   Json?    // {selectors: {apply: "..."}, promptRule: "...", notes: "..."}
+  reason      String?  @db.Text // why this recipe was created
+  source      String   @default("manual") // "manual" | "auto_from_failure"
+  confidence  Int?     // if auto-generated
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, urlPattern])
+  @@index([urlPattern])
+}
+
 // ========== INTERVIEW PREP ==========
 
 model StarStory {

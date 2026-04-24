@@ -1,4 +1,4 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs, fetchRecipes, captureFailure, diagnoseFailureById } from '../lib/api-client.js'
 import { API_BASE } from '../lib/config.js'
 
 // ---------------------------------------------------------------------------
@@ -138,10 +138,18 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
 }
 
 async function applyViaClientSide(app, resumeData) {
-  // Use the original applyUrl — let the agent detect Easy Apply vs external-redirect
-  // and click the appropriate anchor. agent.js's anchor click uses window.location.href
-  // which navigates properly for both LinkedIn SPA (opens /apply/ modal) and external ATS.
   const applyUrl = app.job?.applyUrl
+
+  // Self-heal: check if a recipe says to skip this URL pattern
+  try {
+    const recipes = await fetchRecipes(applyUrl)
+    const skipRecipe = recipes.find(r => r.skipSite)
+    if (skipRecipe) {
+      await addLog(`  ⏭ Recipe skip: ${skipRecipe.reason || skipRecipe.urlPattern} (confidence ${skipRecipe.confidence || '—'}%)`)
+      return { status: 'needs_review', reason: `recipe_skip: ${skipRecipe.reason || skipRecipe.urlPattern}` }
+    }
+  } catch {}
+
   let tab = null
 
   try {
@@ -447,6 +455,8 @@ async function _processNextJob() {
     await updateStatus(app.id, 'saved', `[auto-apply skip] ${result.reason || 'unknown'}`)
     results.skipped++
     await addLog(`  ⏭ Needs review: ${result.reason || 'unknown'}`)
+    // Self-heal capture + diagnose (non-blocking)
+    captureSelfHealFailure(app, applyUrl, result).catch(() => {})
   } else {
     // Failed — classify error before deciding retry
     const reason = result.reason || 'unknown'
@@ -476,6 +486,8 @@ async function _processNextJob() {
       results.failed++
       const tailReason = result.diagnosis?.canRetry === false ? ' (AI: no retry)' : ` (after ${MAX_RETRIES} retries)`
       await addLog(`  ❌ Failed${tailReason}: ${reason}`, { level: 'error', metadata: result.diagnosis ? { diagnosis: result.diagnosis } : null })
+      // Self-heal capture + diagnose
+      captureSelfHealFailure(app, applyUrl, result).catch(() => {})
     }
   }
 
@@ -498,15 +510,57 @@ async function _processNextJob() {
   } catch {}
 
   currentAppId = null
-  scheduleNext()
+  // Fail-fast: only apply the anti-bot cool-down after a real submit. If the job bailed
+  // without submitting anything (no_apply_mechanism, already_applied, page errors),
+  // move to the next job quickly — LinkedIn's rate-limiter keys on submits, not on tab opens.
+  scheduleNext(result.status === 'applied')
 }
 
 
-function scheduleNext() {
-  const delay = randomDelay()
+// Self-heal: after a failed/skipped job, capture context and run AI diagnosis.
+// If diagnosis is high-confidence "skip_site", a recipe is auto-generated server-side,
+// and future runs will short-circuit this URL pattern.
+async function captureSelfHealFailure(app, applyUrl, result) {
+  if (!applyUrl) return
+  const { activeBatchId } = await chrome.storage.local.get('activeBatchId').catch(() => ({}))
+  const historySnippet = {
+    reason: result?.reason,
+    diagnosis: result?.diagnosis || null,
+    doc: result?.doc ? {
+      qa: (result.doc.qa || []).slice(-5),
+      lastUrl: result.doc.lastSeenPageState?.url,
+      lastFields: (result.doc.lastSeenPageState?.fields || []).slice(0, 5).map(f => ({ label: f.label, type: f.type, value: (f.value || '').slice(0, 40) })),
+      lastButtons: (result.doc.lastSeenPageState?.buttons || []).slice(0, 10).map(b => b.text),
+    } : null,
+  }
+  const domSnippet = result?.doc?.lastSeenPageState?.bodyText?.slice(0, 2500) || null
+  const captured = await captureFailure({
+    batchId: activeBatchId || null,
+    applicationId: app?.id || null,
+    url: applyUrl,
+    reason: result?.reason || 'unknown',
+    historySnippet,
+    domSnippet,
+    screenshot: result?.doc?.confirmationScreenshot || null,
+  })
+  if (captured?.failureId) {
+    addLog(`  📋 Failure captured (${captured.failureId.slice(0, 8)}) — pattern: ${captured.hostPattern}`)
+    // Trigger diagnose asynchronously — if recipe is auto-created, next same-pattern job skips
+    diagnoseFailureById(captured.failureId).then(d => {
+      if (d?.diagnosis) {
+        const conf = d.diagnosis.confidence || 0
+        const cat = d.diagnosis.fixCategory || 'unknown'
+        addLog(`  🧠 AI diagnose: ${d.diagnosis.rootCause || '—'} [${cat}, ${conf}%]${d.recipeId ? ' → recipe auto-created' : ''}`)
+      }
+    }).catch(() => {})
+  }
+}
+
+function scheduleNext(didSubmit = false) {
+  const delay = didSubmit ? randomDelay() : randomDelay(3000, 6000)
   const seconds = Math.round(delay / 1000)
   chrome.alarms.create('nextJob', { delayInMinutes: delay / 60000 })
-  addLog(`  ⏳ Next in ${seconds}s`)
+  addLog(`  ⏳ Next in ${seconds}s${didSubmit ? '' : ' (fast — no submit)'}`)
 }
 
 chrome.alarms.onAlarm.addListener(alarm => {

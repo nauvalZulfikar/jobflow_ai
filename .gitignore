@@ -6,3 +6,4 @@ dist/
 *.log
 .turbo/
 packages/db/src/generated/
+tmp/

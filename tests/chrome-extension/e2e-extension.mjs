@@ -144,7 +144,7 @@ async function main() {
     //   LET_SUBMIT=1    → let extension actually submit and record docs
     const STOP_ON_MODAL = process.env.STOP_ON_MODAL !== '0' && process.env.LET_SUBMIT !== '1'
     const MAX_APPLIED = Number(process.env.MAX_APPLIED || 1)
-    const deadline = Date.now() + 480000
+    const deadline = Date.now() + (Number(process.env.DEADLINE_MS) || 1800000)
     let lastLog = ''
     let modalReached = false
     let errored = false
