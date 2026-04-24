@@ -114,7 +114,8 @@ STAGE DETECTION (critical — decide which stage you are in first):
 - bodyText contains "thank you", "application submitted", "berhasil dikirim", "sudah dilamar", or equivalent → status "done".
 
 FORM-FILL RULES (Stage 2):
-- Only fill fields that are empty or need correction (check "value" — if already filled, skip).
+- COMPARE every field's current "value" with resumeData. If the pre-filled value is outdated, wrong, or doesn't match resumeData, OVERWRITE it with the correct value. Do NOT trust pre-filled values blindly — LinkedIn often pre-fills with stale data from prior applications. Example: if "value": "+44 7776638756" but resumeData.phone is "081234567890", emit a "type" action to fix it.
+- Only SKIP a pre-filled field if the value exactly matches what resumeData says (or is clearly the same data in a different format, e.g. "(62) 812-345-6789" vs "081234567890").
 - Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action. Common invented selectors to AVOID: input[name='phone'], input[name='email'], input[name='location']. If you don't see a matching entry in the fields[] array, the field does not exist.
 - For SELECT: use exact option text from the options list.
 - SKILL-YEARS QUESTIONS ("How many years of experience do you have with X?"):

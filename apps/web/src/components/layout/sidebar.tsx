@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Settings, LogOut } from 'lucide-react'
+import { LayoutDashboard, Settings, LogOut, ClipboardCheck } from 'lucide-react'
 import { Briefcase } from 'lucide-react'
 import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
@@ -35,6 +35,16 @@ export function Sidebar() {
         >
           <LayoutDashboard className={cn('h-5 w-5 flex-shrink-0', pathname.startsWith('/dashboard') || pathname.startsWith('/jobs') || pathname.startsWith('/resume') ? 'text-blue-600' : 'text-gray-400')} />
           Dashboard
+        </Link>
+        <Link
+          href="/applications/history"
+          className={cn(
+            'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+            pathname.startsWith('/applications') ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          )}
+        >
+          <ClipboardCheck className={cn('h-5 w-5 flex-shrink-0', pathname.startsWith('/applications') ? 'text-blue-600' : 'text-gray-400')} />
+          Applied Jobs
         </Link>
       </nav>
 
