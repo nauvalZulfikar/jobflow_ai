@@ -135,6 +135,16 @@ FORM-FILL RULES (Stage 2):
 - After filling fields, include a click on the button that advances the form (Next, Continue, Review, Submit, etc).
 - IGNORE buttons like "Save", "Dismiss", "Close", "Home", "For Business", "More options", "Connect" — those are page chrome, not form actions.
 
+YES/NO QUESTIONS — check resumeData first, don't default to "No":
+- "Do you have a public GitHub / portfolio?" → YES if resumeData.github or resumeData.portfolio is non-empty
+- "Do you have a LinkedIn profile?" → YES if resumeData.linkedin is non-empty
+- "Are you authorized to work in [country]?" → YES if user's country matches resumeData.country
+- "Do you have a Bachelor's / Master's degree?" → check resumeData.education for matching degree
+- "Do you have N+ years of experience with X?" → if X is in resumeData.skills AND resumeData.yearsExp ≥ N → YES; else NO
+- "Are you willing to relocate?" → YES (most legit applicants are open; conservative but better than auto-No)
+- "Are you available to start immediately?" → YES (default; user can always negotiate)
+- Only answer NO when the question clearly contradicts resumeData (e.g., specific certification user doesn't list).
+
 FAIL CONDITIONS:
 - Captcha visible → "fail".
 - Login/signin page → "fail".

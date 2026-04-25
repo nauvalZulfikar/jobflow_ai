@@ -50,7 +50,40 @@ async function captureTabScreenshot(tabId) {
   }
 }
 
-async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
+// Check pageState for filter-defined skip conditions during the flow.
+// Returns null if pass, or { reason } if should bail.
+function midFlowFilterCheck(pageState, filter) {
+  if (!filter) return null
+  const labels = (pageState?.fields || []).map(f => String(f.label || '').toLowerCase())
+  const allLabels = labels.join(' | ')
+  // Cover letter
+  if (filter.skipIfCoverLetter && /\b(cover letter|motivation letter|why are you|in your own words|tell us about yourself)\b/i.test(allLabels)) {
+    return { reason: 'filter: cover letter required' }
+  }
+  // Essay (long textarea OR essay-style question)
+  if (filter.skipIfEssay) {
+    const hasEssay = (pageState?.fields || []).some(f =>
+      f.type === 'textarea' && /\b(why|describe|explain|tell us|elaborate|reason)\b/i.test(String(f.label || ''))
+    )
+    if (hasEssay) return { reason: 'filter: essay question detected' }
+  }
+  // Salary minimum check via bodyText
+  if (filter.salaryMin && filter.salaryMin > 0) {
+    const text = String(pageState?.bodyText || '')
+    // Match patterns like "USD 50,000", "$50000", "Rp 10.000.000", "IDR 50000000"
+    const matches = text.match(/(?:USD|US\$|\$|EUR|€|GBP|£|SGD|S\$|IDR|Rp\.?)\s?([\d,. ]{4,16})/gi) || []
+    for (const m of matches) {
+      const num = Number(m.replace(/[^\d]/g, ''))
+      if (num > 0 && num < filter.salaryMin / 5) {
+        // Heuristic: a salary much below filter.salaryMin (5x lower = clearly below) → bail
+        return { reason: `filter: salary ${m.trim()} below min ${filter.salaryMin}` }
+      }
+    }
+  }
+  return null
+}
+
+async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20, filter = null) {
   // Upload resume first if available
   try {
     await sendTabMessage(tabId, { action: 'UPLOAD_RESUME', resumeUrl: resumeData.resumeUrl }, 15000)
@@ -71,6 +104,13 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
     }
     if (!pageState) return { status: 'failed', reason: 'no_page_state', doc: { qa, lastSeenPageState } }
     lastSeenPageState = pageState
+
+    // Mid-flow filter check (cover letter / essay / salary minimum)
+    const skipCheck = midFlowFilterCheck(pageState, filter)
+    if (skipCheck) {
+      await addLog(`  ⏭ Mid-flow skip: ${skipCheck.reason}`)
+      return { status: 'needs_review', reason: skipCheck.reason, doc: { qa, lastSeenPageState } }
+    }
 
     await addLog(`  🤖 Step ${step}/${maxSteps} — ${pageState.fields.length} fields, ${pageState.buttons.map(b => b.text).join(' | ')}`)
 
@@ -137,7 +177,7 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20) {
   return { status: 'needs_review', reason: 'agent: max_steps_reached', doc: { qa, lastSeenPageState } }
 }
 
-async function applyViaClientSide(app, resumeData) {
+async function applyViaClientSide(app, resumeData, filter = null) {
   const applyUrl = app.job?.applyUrl
 
   // Self-heal: check if a recipe says to skip this URL pattern
@@ -163,7 +203,7 @@ async function applyViaClientSide(app, resumeData) {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/agent.js'] })
     await new Promise(r => setTimeout(r, 1000))
 
-    const result = await runApplyAgent(tab.id, applyUrl, resumeData, 20)
+    const result = await runApplyAgent(tab.id, applyUrl, resumeData, 20, filter)
     return result || { status: 'failed', reason: 'no_response' }
   } catch (err) {
     return { status: 'failed', reason: err.message || 'client_apply_error' }
@@ -387,6 +427,9 @@ async function startAutoApply() {
     return
   }
 
+  // Persist filter for processNextJob to consume
+  await chrome.storage.local.set({ activeFilter: filter || null })
+
   // Fix 1: Session pre-check — verify LinkedIn is logged in before wasting the whole batch
   const hasLinkedIn = applications.some(a => a.job?.applyUrl?.includes('linkedin.com'))
   if (hasLinkedIn) {
@@ -486,26 +529,28 @@ async function _processNextJob() {
   }
 
   let result
+  // Load active filter (set during startAutoApply) for mid-flow checks
+  const { activeFilter = null } = await chrome.storage.local.get('activeFilter')
 
   try {
     const isLinkedIn = applyUrl.includes('linkedin.com')
     if (isLinkedIn) {
       // LinkedIn blocks server IP — always client-side
       await addLog('  → Client-side apply (LinkedIn)...')
-      result = await applyViaClientSide(app, resumeData)
+      result = await applyViaClientSide(app, resumeData, activeFilter)
     } else {
       // Non-LinkedIn — try server first, fallback to client-side
       await addLog('  → Sending to server auto-apply...')
       const triggerRes = await triggerServerAutoApply(app.id)
       if (!triggerRes.success) {
         await addLog(`  ⚠️ Server rejected: ${triggerRes.error?.code || 'unknown'} — falling back to client-side...`)
-        result = await applyViaClientSide(app, resumeData)
+        result = await applyViaClientSide(app, resumeData, activeFilter)
       } else {
         await addLog('  → Server processing... polling status')
         result = await pollAutoApplyStatus(app.id, 120000)
         if (result.status === 'failed' && !isPermanentError(result.reason)) {
           await addLog(`  ⚠️ Server failed: ${result.reason} — trying client-side...`)
-          result = await applyViaClientSide(app, resumeData)
+          result = await applyViaClientSide(app, resumeData, activeFilter)
         }
       }
     }

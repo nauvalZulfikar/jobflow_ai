@@ -172,7 +172,9 @@ async function main() {
           await popup.click('#stop-btn').catch(() => {})
           break
         }
-        if (/No saved jobs|❌|Token tidak valid|Uncaught|LinkedIn not logged in/.test(txt)) {
+        // Real terminal errors only — not retry markers (❌ Failed: ... will retry, etc.)
+        const fatalRx = /No saved jobs|Token tidak valid|Uncaught|LinkedIn not logged in|❌ Permanent failure|💥 Crash error|FATAL/
+        if (fatalRx.test(txt)) {
           errored = true
           log('\n❌ extension reported error — see logs above')
           break
