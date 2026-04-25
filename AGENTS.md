@@ -648,9 +648,12 @@ Tahap 8 — Billing & Polish (Minggu 9–10)
 | Follow-up Reminder (cron) | ✅ Done | Hourly cron |
 | Stripe Billing | ✅ Done | Free/Pro/Team |
 | Notifikasi in-app | ✅ Done | |
-| **Auto-apply (Playwright submit)** | ❌ Belum | **Next priority** |
-| **AI jawab pertanyaan form** | ❌ Belum | Butuh `AutoApplySession` model |
-| **Chrome Extension** | ❌ Belum | Plasmo belum setup |
+| **Auto-apply (Chrome Extension client-side)** | ✅ Done | LinkedIn Easy Apply + external ATS redirect, lihat section "AUTO-APPLY EXTENSION (Implementasi Aktual)" |
+| **AI jawab pertanyaan form** | ✅ Done | DOM-based agent + 5 layer guardrails (hallucination, protected attrs, dll) |
+| **Chrome Extension** | ✅ Done | MV3 service worker + universal `agent.js` content script |
+| **Per-application audit (Q&A + screenshot)** | ✅ Done | `apply_attempt` metadata, `/applications/history` page |
+| **Self-heal recipes (auto-skip stuck sites)** | ✅ Done | `AutoApplyFailure` + `ApplyRecipe` tables, `/failures` page |
+| **User-defined apply filter** | ✅ Done | `UserAutoApplyFilter` table, `/settings/auto-apply` page |
 | Parser email (Gmail OAuth) | ❌ Belum | |
 | Dashboard analitik | ❌ Belum | |
 | A/B Testing Resume | ❌ Belum | Model sudah ada |
@@ -1715,6 +1718,250 @@ Gagal:  toast merah + tombol "Coba Manual" → buka applyUrl
 | Session sudah `submitted` | Return session existing (idempotent) |
 | Playwright timeout > 30s | Session → `failed`, fallback manual |
 | Resume tidak ada file URL | Skip upload, isi field text saja |
+
+---
+
+## 🚀 AUTO-APPLY EXTENSION (Implementasi Aktual — April 2026)
+
+> **Catatan**: Section di atas (rencana Phase 1-4 dengan Playwright server-side) dirancang awal proyek. Implementasi ACTUAL diverged ke arah Chrome Extension yang jalan di browser user. Section ini dokumentasinya.
+
+### Mengapa Extension, Bukan Server-side Playwright?
+
+- **LinkedIn anti-bot**: server IP (data center ASN) langsung di-flag. Extension pake IP residential user = aman.
+- **Cookie management**: server butuh user upload `li_at` cookie berkala. Extension reuse session yang user already pake.
+- **Detection cost**: server-side deteksi → akun LinkedIn ban. Extension client-side dengan slow cadence = low risk.
+- **Tradeoff**: extension butuh laptop on saat user klik Start. Server-side hands-off tapi ban risk tinggi.
+
+### Arsitektur Extension
+
+```
+chrome-extension/
+├── manifest.json              # MV3, permissions: tabs, activeTab, storage, scripting, cookies, <all_urls>
+├── popup/
+│   ├── popup.html             # UI: Token input, Start button, stats, activity log
+│   └── popup.js               # State sync via chrome.runtime.sendMessage
+├── background/
+│   └── service-worker.js      # Orchestrator: fetch jobs, process queue, drive agent
+├── content/
+│   └── agent.js               # Universal content script (semua site): scan + execute actions
+└── lib/
+    ├── api-client.js          # Wrapper fetch ke API
+    └── config.js              # DEV flag (true=localhost:3001/api, false=jobflow.aureonforge.com/api)
+```
+
+### Flow End-to-End (Aktual)
+
+```
+User di Chrome → klik popup extension → Start Auto-Apply
+  → service-worker.startAutoApply()
+    → fetchSavedApplications + fetchResumeData + fetchAutoApplyFilter + fetchRecipes
+    → Pre-flight filter (title/company/country/easyApplyOnly/maxPerDay/activeHours)
+    → Active filter saved ke chrome.storage.local untuk consume per-job
+    → For each job:
+      → Recipe check (auto-skip site kalo recipe match)
+      → chrome.tabs.create(applyUrl)
+      → chrome.scripting.executeScript inject agent.js + window.__jobflowApiBase
+      → runApplyAgent loop step 1..20:
+        → sendMessage GET_PAGE_STATE → agent.getPageState()
+        → mid-flow filter check (cover letter / essay / salary)
+        → POST /api/auto-apply/dom-step → AI returns actions[]
+        → Server post-process:
+          - Strip protected-attribute checkboxes (race/veteran/clearance)
+          - Strip hallucinated phone/location/email when resume empty
+          - Strip salary "0" / essay fabrications
+          - Force skill-year answers from resumeData.skills
+        → sendMessage EXECUTE_ACTIONS → agent.executeActions()
+        → If Submit clicked: wait 3.5s, captureVisibleTab, return applied
+      → Update DB status=applied via /api/applications/:id/status
+      → Push audit log via /api/extension/logs (kind=apply_attempt)
+      → On stuck: capture failure → AI diagnose → maybe auto-recipe
+    → Anti-bot delay: 30-90s after submit, 3-6s after fail-fast bailout
+```
+
+### Innovation: DOM-Based AI Agent (No Screenshots)
+
+Awalnya screenshot+vision based. Switched ke DOM snapshot:
+- **Cost**: 10-100x fewer tokens (text vs image)
+- **Speed**: ~5s vs ~15s per step
+- **Reliability**: works in background tabs, not affected by visual changes
+- **Determinism**: agent passes structured `{fields, buttons, bodyText, modalOpen}` to AI
+
+### Innovation: LinkedIn SDUI Workaround
+
+LinkedIn migrated ke Server-Driven UI dengan hashed CSS classes. Easy Apply button sekarang `<a>` bukan `<button>`. Programmatic `el.click()` di-swallow oleh SPA. **Workaround**: agent.js anchor click pake `window.location.href = el.href`. Ini trigger SDUI route `/jobs/view/X/apply/?openSDUIApplyFlow=true` dan modal kebuka langsung.
+
+### Innovation: Self-Heal Recipes
+
+Stuck cases di-capture + AI-diagnose. High-confidence "skip site" diagnoses auto-create `ApplyRecipe` row (urlPattern + skipSite=true). Subsequent runs short-circuit URL pattern itu instantly.
+
+```
+Job stuck → POST /api/self-heal/capture
+  → AutoApplyFailure row created
+  → POST /api/self-heal/diagnose/:id (async)
+  → AI returns {rootCause, fixCategory, confidence, skipForNow}
+  → if confidence ≥ 80% AND fixCategory in [skip_site, login_wall]:
+    → CREATE ApplyRecipe(urlPattern=hostname, skipSite=true)
+  → Next run: fetchRecipes(applyUrl) → match → skip immediately
+```
+
+### DB Tables (Aktual)
+
+```prisma
+model UserAutoApplyFilter {
+  id String @id @default(cuid())
+  userId String @unique
+  titleInclude String[]
+  titleExclude String[]
+  allowRemote Boolean @default(true)
+  countryWhitelist String[]
+  countryBlacklist String[]
+  jobTypesAllowed String[]
+  experienceAllowed String[]
+  salaryMin Int?
+  salaryCurrency String? @default("IDR")
+  skipIfSalaryRequired Boolean @default(false)
+  companyBlacklist String[]
+  maxPerDay Int @default(5)
+  maxPerCompanyPerWeek Int @default(2)
+  easyApplyOnly Boolean @default(false)
+  activeHourStart Int @default(0)
+  activeHourEnd Int @default(23)
+  activeDays String[]
+  skipIfCoverLetter Boolean @default(false)
+  skipIfEssay Boolean @default(false)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model AutoApplyFailure {
+  id String @id @default(cuid())
+  userId String
+  batchId String?
+  applicationId String?
+  url String
+  hostPattern String   // e.g. "linkedin.com/jobs/view"
+  reason String
+  historySnippet Json?
+  domSnippet String? @db.Text
+  screenshot String? @db.Text
+  diagnosis Json?      // {rootCause, fixCategory, suggestedFix, confidence, skipForNow}
+  recipeId String?
+  createdAt DateTime @default(now())
+  @@index([userId, createdAt])
+  @@index([hostPattern])
+}
+
+model ApplyRecipe {
+  id String @id @default(cuid())
+  userId String?      // null = global
+  urlPattern String   // hostname or host+path
+  skipSite Boolean @default(false)
+  overrides Json?
+  reason String? @db.Text
+  source String @default("manual") // "manual" | "auto_from_failure"
+  confidence Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([userId, urlPattern])
+  @@index([urlPattern])
+}
+
+// Existing model — used for audit metadata too:
+// ExtensionActivityLog.metadata.kind='apply_attempt' contains:
+//   { jobTitle, company, applyUrl, finalUrl, questions[], resumeUsed, confirmationScreenshot }
+```
+
+### API Endpoints (Aktual)
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/auto-apply/filters` | GET/PUT | User filter config |
+| `/api/auto-apply/dom-step` | POST | AI decides next action from page state |
+| `/api/auto-apply/diagnose` | POST | Vision-based diagnose (legacy) |
+| `/api/extension/logs` | POST/GET | Activity log (per-batch + apply_attempt audit) |
+| `/api/self-heal/capture` | POST | Capture stuck case |
+| `/api/self-heal/diagnose/:id` | POST | AI root-cause + auto-recipe |
+| `/api/self-heal/recipes` | GET | Fetch recipes for URL |
+| `/api/self-heal/failures` | GET | List captured failures |
+
+### Web Pages (Aktual)
+
+| Path | Purpose |
+|---|---|
+| `/applications/history` | Per-applied job: Q&A table, resume info, confirmation screenshot |
+| `/failures` | Stuck cases + AI diagnoses + active recipes |
+| `/settings/auto-apply` | Filter config UI (10 rule categories) |
+| `/extension-logs` | Raw activity log per batch |
+
+### 5-Layer Filter Cascade
+
+| Layer | When | What |
+|---|---|---|
+| **1. Pre-flight** | Before opening any tab | Title rules, company blacklist, country, source/easyApplyOnly |
+| **2. Recipe check** | Per-job before opening | Auto-skip URLs matching stuck-site recipes |
+| **3. Time + Cap** | Batch start | activeHours, activeDays, maxPerDay |
+| **4. Mid-flow** | After each scan during run | Cover letter / essay required, salary below minimum |
+| **5. Form-level** | Per AI decision | Hard-block protected attrs, hallucinated fields, no-data salary/essay |
+
+### Hallucination Defense (5 Strips)
+
+Server-side post-process di `/api/auto-apply/dom-step` SEBELUM actions returned ke extension:
+
+1. **Protected-attribute strip** — checkbox/radio/select pada label match `hispanic|latino|race|ethnic|veteran|disability|clearance|sponsorship|gender identity` di-strip kecuali option = `decline|prefer not|do not wish`.
+2. **Salary strip** — field `salary|compensation|expected pay|gaji` di-strip kalo `resumeData.salary` kosong.
+3. **Essay strip** — field `why do you want|tell us|cover letter|describe|motivation` di-strip kalo `resumeData.summary` < 40 char.
+4. **Hallucinated personal field strip** — type action ke field map ke `phone/email/location/firstName/lastName/linkedin/github` di-strip kalo resume value kosong.
+5. **Skill-years deterministic override** — kalau label match "years of experience with X" dan X ada di `resumeData.skills` → force value = `resumeData.yearsExp`.
+
+### Hallucination Defense (Prompt-Level)
+
+`DOM_STEP_SYSTEM` prompt di `apps/api/src/routes/ai-apply.ts` enforces:
+- Compare pre-filled values dengan resumeData; overwrite kalo wrong, leave alone kalo resume kosong
+- Yes/no questions: check resumeData first (github, linkedin, education) sebelum default ke "No"
+- EEOC fields: select "decline / prefer not to say"
+- LinkedIn-specific: Easy Apply button has `aria-label^="Easy Apply to"` — click that, not "Save job"
+- Stage detection: `modalOpen=false` + `/jobs/view/` URL → click apply anchor first; else fill form
+
+### Test Infrastructure
+
+`tests/chrome-extension/`:
+- `agent.test.mjs` — 3 synthetic DOM cases (modal scope, nav filter, plain form)
+- `agent.linkedin.test.mjs` — 5 assertions against real logged-in LinkedIn HTML fixture
+- `e2e-extension.mjs` — Playwright loads extension into Chromium, drives full flow. Env vars: `MODE=local|prod`, `LET_SUBMIT=1` (actually click submit), `MAX_APPLIED=N`, `DEADLINE_MS=N`.
+- `e2e-cdp-dryrun.mjs` — CDP-based test (older, doesn't load extension; drives via page.evaluate)
+- `fixtures/linkedin-logged-in.html` — captured logged-in LinkedIn DOM for unit tests
+
+### Known Limitations
+
+| Limitation | Mitigation Strategy |
+|---|---|
+| LinkedIn anti-bot may detect Playwright fingerprint | Use real Chrome (not Playwright) for production user runs; consider stealth plugin if going server-side |
+| `captureVisibleTab` returns null in some Playwright contexts | Works in real Chrome; this is test-env quirk only |
+| AI fills boolean "No" too defensively | Resume-aware prompt rules added (Apr 25) |
+| LinkedIn-Applied jobs not synced back to Jobflow | TODO: scrape `/my-items/saved-jobs/?cardType=APPLIED` periodically |
+| `li_at` cookie expiry untracked | TODO: detect 401 / login redirect, notify user |
+| Niche questions (notice period, willing to relocate) — AI still hallucinates | Tighten prompt, add post-process patterns |
+
+### Recommendations / Roadmap
+
+**High Impact**:
+- LinkedIn Applied tab sync → reconcile DB
+- AI cover letter generator per job
+- Multiple resume profiles per job category
+- Application analytics funnel
+- Interview prep card auto-generated 2 days before scheduled
+
+**Medium Impact**:
+- Stealth Playwright integration
+- Smarter salary detection (LLM parser for "competitive", "DOE")
+- Per-company-per-week dedup enforcement
+- Extension self-schedule via chrome.alarms
+
+**Risk Mitigation**:
+- AI cost monitoring + per-user caps
+- Cookie expiry detection + notify
+- PII encryption at rest for Resume.content
+- Account ban risk warning UI
 
 ---
 
