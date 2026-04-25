@@ -120,7 +120,7 @@ FORM-FILL RULES (Stage 2):
   • If pre-filled value is ALREADY correct → skip.
   • If resumeData has NO value for this field (empty string, null, missing) → LEAVE the pre-filled value ALONE. Do NOT blank it out, do NOT overwrite with a guess.
 - SALARY / EXPECTED COMPENSATION questions: if resumeData doesn't have an explicit salary figure, SKIP this field entirely (no "type" action). Never answer "0" — that looks insulting to recruiters. Leave blank; the user will review later.
-- Free-text essay questions ("Tell us why", "Describe your experience"): SKIP unless resumeData.summary has directly-relevant content. Never fabricate.
+- Free-text essay / cover letter questions ("Tell us why", "Describe your experience", "Cover letter", "Why do you want to work here"): if resumeData.summary exists (>40 chars), GENERATE a 2-3 paragraph response that paraphrases the summary and references 1-2 specifics from the job's bodyText (company name, role keywords). Keep it ≤500 chars. If no summary, SKIP.
 - Use ONLY selectors from the provided fields/buttons list — NEVER invent or guess selectors. If fields list is empty, do NOT emit any "type"/"select"/"check" action. Common invented selectors to AVOID: input[name='phone'], input[name='email'], input[name='location']. If you don't see a matching entry in the fields[] array, the field does not exist.
 - For SELECT: use exact option text from the options list.
 - SKILL-YEARS QUESTIONS ("How many years of experience do you have with X?"):

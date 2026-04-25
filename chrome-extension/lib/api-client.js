@@ -1,4 +1,4 @@
-import { API_BASE } from './config.js'
+import { getApiBase } from './config.js'
 
 async function getToken() {
   const { apiToken } = await chrome.storage.local.get('apiToken')
@@ -33,7 +33,7 @@ function computeTotalYears(experience) {
 
 export async function fetchSavedApplications() {
   const token = await getToken()
-  const res = await fetch(`${API_BASE}/applications`, {
+  const res = await fetch(`${await getApiBase()}/applications`, {
     headers: { 'Authorization': `Bearer ${token}` },
   })
   const json = await res.json()
@@ -42,9 +42,25 @@ export async function fetchSavedApplications() {
   return json.data.filter(a => a.status === 'saved' && a.job?.applyUrl)
 }
 
-export async function fetchResumeData() {
+// Pick the best resume for a given job title from a list of resumes.
+// Matching: exclude wins over include; otherwise include match wins; else default.
+function pickResumeForTitle(resumes, jobTitle) {
+  if (!Array.isArray(resumes) || resumes.length === 0) return null
+  const t = String(jobTitle || '').toLowerCase()
+  const fallback = resumes.find(r => r.isDefault) || resumes[0]
+  if (!t) return fallback
+  for (const r of resumes) {
+    const exclude = (r.titleExclude || []).some(x => t.includes(String(x).toLowerCase()))
+    if (exclude) continue
+    const include = (r.titleInclude || []).some(x => t.includes(String(x).toLowerCase()))
+    if (include) return r
+  }
+  return fallback
+}
+
+export async function fetchResumeData(jobTitle = '') {
   const token = await getToken()
-  const res = await fetch(`${API_BASE}/users/me`, {
+  const res = await fetch(`${await getApiBase()}/users/me`, {
     headers: { 'Authorization': `Bearer ${token}` },
   })
   const json = await res.json()
@@ -52,15 +68,15 @@ export async function fetchResumeData() {
 
   const user = json.data
 
-  // Fetch default resume content
+  // Fetch all resumes, pick the best match for this job title (multi-resume profiles)
   let resume = {}
   try {
-    const resResume = await fetch(`${API_BASE}/resume`, {
+    const resResume = await fetch(`${await getApiBase()}/resume`, {
       headers: { 'Authorization': `Bearer ${token}` },
     })
     const resumeJson = await resResume.json()
     if (resumeJson.success && resumeJson.data?.length > 0) {
-      const defaultResume = resumeJson.data.find(r => r.isDefault) || resumeJson.data[0]
+      const defaultResume = pickResumeForTitle(resumeJson.data, jobTitle)
       const content = defaultResume.content || {}
       const pi = content.personalInfo || {}
       const exps = Array.isArray(content.experience) ? content.experience : []
@@ -124,7 +140,7 @@ export async function resolveFields({ fields, resumeData, url }) {
   const token = await getToken()
   if (!token) return []
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/resolve-fields`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/resolve-fields`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields, resumeData, url }),
@@ -138,7 +154,7 @@ export async function recoverField({ field, error, valueAttempted, resumeData })
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/recover-field`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/recover-field`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ field, error, valueAttempted, resumeData }),
@@ -160,7 +176,7 @@ export async function checkLinkedInSession() {
 
 export async function triggerServerAutoApply(applicationId) {
   const token = await getToken()
-  const res = await fetch(`${API_BASE}/applications/${applicationId}/auto-apply`, {
+  const res = await fetch(`${await getApiBase()}/applications/${applicationId}/auto-apply`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -178,7 +194,7 @@ export async function pollAutoApplyStatus(applicationId, maxWaitMs = 120000) {
 
   while (Date.now() - start < maxWaitMs) {
     try {
-      const res = await fetch(`${API_BASE}/applications/${applicationId}/auto-apply/status`, {
+      const res = await fetch(`${await getApiBase()}/applications/${applicationId}/auto-apply/status`, {
         headers: { 'Authorization': `Bearer ${token}` },
       })
       const json = await res.json()
@@ -208,7 +224,7 @@ export async function diagnoseFailure({ url, screenshotBase64, domSnippet, ruleB
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/diagnose`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/diagnose`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, screenshotBase64, domSnippet, ruleBasedReason, attempted }),
@@ -222,7 +238,7 @@ export async function guideForm({ url, domSnippet, formFields, resumeData, fille
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/guide-form`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/guide-form`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, domSnippet, formFields, resumeData, filledCount, totalCount }),
@@ -236,7 +252,7 @@ export async function domStep({ url, pageState, resumeData, history, currentStep
   const token = await getToken()
   if (!token) return { actions: [], status: 'fail', reason: 'no_token' }
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/dom-step`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/dom-step`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, pageState, resumeData, history, currentStep, maxStep }),
@@ -254,7 +270,7 @@ export async function agentStep({ url, screenshotBase64, goal, history, resumeDa
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/agent-step`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/agent-step`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ url, screenshotBase64, goal, history, resumeData, maxStep, currentStep }),
@@ -269,7 +285,7 @@ export async function pushExtensionLogs(entries) {
   const token = await getToken()
   if (!token) return { success: false, error: { code: 'NO_TOKEN' } }
   try {
-    const res = await fetch(`${API_BASE}/extension/logs`, {
+    const res = await fetch(`${await getApiBase()}/extension/logs`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -288,7 +304,7 @@ export async function fetchAutoApplyFilter() {
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/auto-apply/filters`, {
+    const res = await fetch(`${await getApiBase()}/auto-apply/filters`, {
       headers: { 'Authorization': `Bearer ${token}` },
     })
     const json = await res.json()
@@ -301,7 +317,7 @@ export async function fetchRecipes(url) {
   const token = await getToken()
   if (!token) return []
   try {
-    const res = await fetch(`${API_BASE}/self-heal/recipes?url=${encodeURIComponent(url)}`, {
+    const res = await fetch(`${await getApiBase()}/self-heal/recipes?url=${encodeURIComponent(url)}`, {
       headers: { 'Authorization': `Bearer ${token}` },
     })
     const json = await res.json()
@@ -314,7 +330,7 @@ export async function captureFailure({ batchId, applicationId, url, reason, hist
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/self-heal/capture`, {
+    const res = await fetch(`${await getApiBase()}/self-heal/capture`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ batchId, applicationId, url, reason, historySnippet, domSnippet, screenshot }),
@@ -329,7 +345,7 @@ export async function diagnoseFailureById(failureId) {
   const token = await getToken()
   if (!token) return null
   try {
-    const res = await fetch(`${API_BASE}/self-heal/diagnose/${failureId}`, {
+    const res = await fetch(`${await getApiBase()}/self-heal/diagnose/${failureId}`, {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
     })
@@ -342,7 +358,7 @@ export async function updateStatus(applicationId, status, notes) {
   const token = await getToken()
   const body = { status }
   if (notes) body.notes = notes
-  const res = await fetch(`${API_BASE}/applications/${applicationId}/status`, {
+  const res = await fetch(`${await getApiBase()}/applications/${applicationId}/status`, {
     method: 'PATCH',
     headers: {
       'Authorization': `Bearer ${token}`,

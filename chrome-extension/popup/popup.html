@@ -51,6 +51,22 @@
       <input type="text" id="token-input" placeholder="Paste token dari Settings Jobflow..." class="flex-1">
       <button class="btn btn-primary btn-sm" id="save-token-btn">Save</button>
     </div>
+    <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:11px; color:#6b7280;">
+      <input type="checkbox" id="dev-mode-toggle" style="margin:0;">
+      <span>Dev mode (use localhost:3001 API)</span>
+    </label>
+  </div>
+
+  <!-- Schedule -->
+  <div class="section">
+    <div class="section-title">Daily Schedule</div>
+    <label style="display:flex; align-items:center; gap:6px; font-size:12px;">
+      <input type="checkbox" id="schedule-enabled" style="margin:0;">
+      <span>Auto-run daily at</span>
+      <input type="number" id="schedule-hour" min="0" max="23" value="9" style="width:50px; padding:4px 6px; border:1px solid #d1d5db; border-radius:4px; font-size:12px;">
+      <span>:00 (laptop must be on)</span>
+    </label>
+    <div id="schedule-status" style="margin-top:6px; font-size:10px; color:#9ca3af;"></div>
   </div>
 
   <!-- Status -->

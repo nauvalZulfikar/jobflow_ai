@@ -94,6 +94,11 @@ model Resume {
   fileUrl   String?  // URL ke file PDF/DOCX di R2
   version   Int      @default(1)
 
+  // Auto-apply: resume is picked based on job title matching these rules.
+  // Empty arrays = no rule (only used when this is isDefault=true and no other resume matches).
+  titleInclude String[] @default([])
+  titleExclude String[] @default([])
+
   applications JobApplication[]
   abTestGroups ResumeABTest[]
 

@@ -1,5 +1,5 @@
 import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs, fetchRecipes, captureFailure, diagnoseFailureById, fetchAutoApplyFilter } from '../lib/api-client.js'
-import { API_BASE } from '../lib/config.js'
+import { getApiBase } from '../lib/config.js'
 
 // ---------------------------------------------------------------------------
 // Client-side apply — opens a tab, injects agent.js, runs DOM-based AI loop
@@ -165,7 +165,7 @@ async function runApplyAgent(tabId, applyUrl, resumeData, maxSteps = 20, filter 
       if (newUrl !== prevUrl) {
         await addLog(`  ↪ Navigated to ${new URL(newUrl).hostname} — re-injecting agent`)
         await waitForTabLoad(tabId)
-        await chrome.scripting.executeScript({ target: { tabId }, func: (base) => { window.__jobflowApiBase = base }, args: [API_BASE] })
+        await chrome.scripting.executeScript({ target: { tabId }, func: (base) => { window.__jobflowApiBase = base }, args: [await getApiBase()] })
         await chrome.scripting.executeScript({ target: { tabId }, files: ['content/agent.js'] })
         await new Promise(r => setTimeout(r, 1000))
       }
@@ -199,7 +199,7 @@ async function applyViaClientSide(app, resumeData, filter = null) {
     await new Promise(r => setTimeout(r, 2000))
 
     // Inject universal agent script, pass API_BASE so it doesn't need import
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (base) => { window.__jobflowApiBase = base }, args: [API_BASE] })
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: (base) => { window.__jobflowApiBase = base }, args: [await getApiBase()] })
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/agent.js'] })
     await new Promise(r => setTimeout(r, 1000))
 
@@ -532,25 +532,37 @@ async function _processNextJob() {
   // Load active filter (set during startAutoApply) for mid-flow checks
   const { activeFilter = null } = await chrome.storage.local.get('activeFilter')
 
+  // Multi-resume: pick the resume best matching this job title (titleInclude/titleExclude rules)
+  let perJobResume = resumeData
+  try {
+    const picked = await fetchResumeData(jobTitle)
+    if (picked && picked.firstName) {
+      perJobResume = picked
+      if (picked.firstName !== resumeData?.firstName || picked.email !== resumeData?.email) {
+        await addLog(`  📄 Resume picked: ${picked.firstName} ${picked.lastName} (matched on title)`)
+      }
+    }
+  } catch {}
+
   try {
     const isLinkedIn = applyUrl.includes('linkedin.com')
     if (isLinkedIn) {
       // LinkedIn blocks server IP — always client-side
       await addLog('  → Client-side apply (LinkedIn)...')
-      result = await applyViaClientSide(app, resumeData, activeFilter)
+      result = await applyViaClientSide(app, perJobResume, activeFilter)
     } else {
       // Non-LinkedIn — try server first, fallback to client-side
       await addLog('  → Sending to server auto-apply...')
       const triggerRes = await triggerServerAutoApply(app.id)
       if (!triggerRes.success) {
         await addLog(`  ⚠️ Server rejected: ${triggerRes.error?.code || 'unknown'} — falling back to client-side...`)
-        result = await applyViaClientSide(app, resumeData, activeFilter)
+        result = await applyViaClientSide(app, perJobResume, activeFilter)
       } else {
         await addLog('  → Server processing... polling status')
         result = await pollAutoApplyStatus(app.id, 120000)
         if (result.status === 'failed' && !isPermanentError(result.reason)) {
           await addLog(`  ⚠️ Server failed: ${result.reason} — trying client-side...`)
-          result = await applyViaClientSide(app, resumeData, activeFilter)
+          result = await applyViaClientSide(app, perJobResume, activeFilter)
         }
       }
     }
@@ -699,7 +711,28 @@ function scheduleNext(didSubmit = false) {
 
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'nextJob') processNextJob()
+  if (alarm.name === 'dailyAutoApply') {
+    addLog('⏰ Scheduled daily run triggered')
+    startAutoApply().finally(() => scheduleDaily())  // re-arm for tomorrow
+  }
 })
+
+// Compute ms until next HH:00 in user's local timezone, then create the alarm.
+async function scheduleDaily() {
+  await chrome.alarms.clear('dailyAutoApply')
+  const { scheduleEnabled, scheduleHour } = await chrome.storage.local.get(['scheduleEnabled', 'scheduleHour'])
+  if (!scheduleEnabled) return
+  const hour = Math.max(0, Math.min(23, Number(scheduleHour) || 9))
+  const now = new Date()
+  const next = new Date(now)
+  next.setHours(hour, 0, 0, 0)
+  if (next <= now) next.setDate(next.getDate() + 1)
+  chrome.alarms.create('dailyAutoApply', { when: next.getTime(), periodInMinutes: 24 * 60 })
+}
+
+// Re-arm on extension install/startup so alarms survive service-worker restarts
+chrome.runtime.onInstalled.addListener(() => scheduleDaily())
+chrome.runtime.onStartup.addListener(() => scheduleDaily())
 
 // Crash recovery: check if there's an interrupted session on startup
 const MAX_CRASHES_PER_JOB = 2
@@ -793,6 +826,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === 'GET_STATE') {
     getState().then(state => sendResponse({ ...state, lastUpdated: LAST_UPDATED }))
+    return true
+  }
+  if (message.action === 'RESCHEDULE_DAILY') {
+    scheduleDaily().then(() => sendResponse({ ok: true }))
     return true
   }
 })

@@ -15,6 +15,42 @@ chrome.storage.local.get('apiToken', ({ apiToken }) => {
   if (apiToken) $('token-input').placeholder = 'Token saved ✓ (paste baru untuk ganti)'
 })
 
+// Dev mode toggle (runtime — no need to edit config.js)
+chrome.storage.local.get('devMode', ({ devMode }) => {
+  $('dev-mode-toggle').checked = !!devMode
+})
+$('dev-mode-toggle').addEventListener('change', async e => {
+  await chrome.storage.local.set({ devMode: e.target.checked })
+})
+
+// Daily schedule
+chrome.storage.local.get(['scheduleEnabled', 'scheduleHour'], ({ scheduleEnabled, scheduleHour }) => {
+  $('schedule-enabled').checked = !!scheduleEnabled
+  $('schedule-hour').value = scheduleHour ?? 9
+  refreshScheduleStatus()
+})
+
+async function refreshScheduleStatus() {
+  const alarm = await chrome.alarms.get('dailyAutoApply')
+  if (!alarm) {
+    $('schedule-status').textContent = 'No alarm scheduled'
+    return
+  }
+  const next = new Date(alarm.scheduledTime)
+  $('schedule-status').textContent = `Next run: ${next.toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' })}`
+}
+
+async function applySchedule() {
+  const enabled = $('schedule-enabled').checked
+  const hour = Math.max(0, Math.min(23, Number($('schedule-hour').value) || 9))
+  await chrome.storage.local.set({ scheduleEnabled: enabled, scheduleHour: hour })
+  await chrome.runtime.sendMessage({ action: 'RESCHEDULE_DAILY' })
+  setTimeout(refreshScheduleStatus, 200)
+}
+
+$('schedule-enabled').addEventListener('change', applySchedule)
+$('schedule-hour').addEventListener('change', applySchedule)
+
 // Start
 $('start-btn').addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'START' })
