@@ -1965,6 +1965,66 @@ Server-side post-process di `/api/auto-apply/dom-step` SEBELUM actions returned 
 
 ---
 
+## 🛠️ LOCAL DEV SETUP — MANDATORY RULE
+
+**Sejak April 2026, local Postgres database `jobflow` udah di-drop.** Local dev pakai PROD database (`shared-postgres` di VPS) lewat SSH tunnel. Single source of truth.
+
+### Wajib Sebelum `pnpm dev`
+
+```bash
+# 1. Buka SSH tunnel ke prod Postgres (run sekali per laptop session)
+ssh -fN -o ServerAliveInterval=60 -o ServerAliveCountMax=10 -L 5434:localhost:5434 root@72.60.196.21
+
+# 2. Verify tunnel listening
+netstat -ano | grep :5434
+
+# 3. Then: pnpm dev (web :3004, api :3001)
+cd "D:/Downloads/coding project/jobflow/jobflow_ai"
+pnpm dev
+```
+
+### `.env` Konfigurasi (sudah committed)
+
+Semua `.env` di repo (root, `apps/api/.env`, `apps/web/.env`) pakai:
+
+```env
+DATABASE_URL="postgresql://postgres:1bf57b0b91f206e45acdc9c0baf51289@localhost:5434/jobflow"
+```
+
+Local app → `localhost:5434` → SSH tunnel → VPS `127.0.0.1:5434` → docker `shared-postgres:5432`.
+
+### Kalau Tunnel Mati
+
+Symptom: web/API throw "connection refused" pas query DB.
+
+Fix: cek tunnel proses (`netstat -ano | grep :5434`). Kalau gak listening, restart tunnel command di atas.
+
+### Auto-restart Tunnel (Optional)
+
+Bikin Windows scheduled task atau Powershell script yang re-run SSH tunnel pas reboot. SSH option `-o ServerAliveInterval=60` udah keep-alive — tunnel survive sleep/idle.
+
+### Why Single Database?
+
+Sebelumnya: local Postgres terpisah → setiap test dengan `DEV=true` write ke local, dengan `DEV=false` write ke prod → data scattered di 2 tempat → 7+ submits hilang track. Single DB = single source of truth, audit trail utuh.
+
+### Kalau Mau Reset / Fresh Local
+
+Tetap pakai prod DB. Untuk "reset" personal data:
+```sql
+-- run via prisma studio atau psql via tunnel
+DELETE FROM "JobApplication" WHERE "userId" = 'YOUR_USER_ID' AND status = 'saved';
+DELETE FROM "ExtensionActivityLog" WHERE "userId" = 'YOUR_USER_ID';
+DELETE FROM "AutoApplyFailure" WHERE "userId" = 'YOUR_USER_ID';
+```
+
+**Jangan** create local Postgres `jobflow` database lagi. Single source.
+
+### Prod Postgres Exposure
+
+`shared-postgres` container di-bind ke `127.0.0.1:5434` (VPS-internal only — tidak public-facing). Hanya accessible via SSH ke VPS.
+
+---
+
 ## 🔐 VARIABEL ENVIRONMENT
 
 Buat file `.env.example` dengan semua variabel berikut:
