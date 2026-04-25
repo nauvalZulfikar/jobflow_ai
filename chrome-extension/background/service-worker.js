@@ -1,4 +1,4 @@
-import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs, fetchRecipes, captureFailure, diagnoseFailureById } from '../lib/api-client.js'
+import { fetchSavedApplications, fetchResumeData, updateStatus, checkLinkedInSession, triggerServerAutoApply, pollAutoApplyStatus, diagnoseFailure, domStep, pushExtensionLogs, fetchRecipes, captureFailure, diagnoseFailureById, fetchAutoApplyFilter } from '../lib/api-client.js'
 import { API_BASE } from '../lib/config.js'
 
 // ---------------------------------------------------------------------------
@@ -276,6 +276,61 @@ async function addLog(msg, meta = {}) {
   queueRemoteLog(msg, meta.level || 'info', meta.applicationId || null, meta.metadata || null)
 }
 
+// Lowercase substring contains-any check
+function anyContains(haystack, needles) {
+  if (!Array.isArray(needles) || needles.length === 0) return null  // null = no rule
+  const h = String(haystack || '').toLowerCase()
+  return needles.some(n => h.includes(String(n).toLowerCase()))
+}
+
+function passesPreflightFilter(job, filter) {
+  if (!filter) return { pass: true }
+  const title = job?.title || ''
+  const company = job?.company || ''
+  const location = job?.location || ''
+
+  // Title include: at least one keyword must match (kosong = no rule)
+  if (filter.titleInclude?.length > 0) {
+    const hit = anyContains(title, filter.titleInclude)
+    if (!hit) return { pass: false, reason: `title-include miss: "${title}"` }
+  }
+  // Title exclude: skip if any matches
+  if (filter.titleExclude?.length > 0 && anyContains(title, filter.titleExclude)) {
+    return { pass: false, reason: `title-exclude hit: "${title}"` }
+  }
+  // Company blacklist
+  if (filter.companyBlacklist?.length > 0 && anyContains(company, filter.companyBlacklist)) {
+    return { pass: false, reason: `company blacklisted: ${company}` }
+  }
+  // Country whitelist
+  if (filter.countryWhitelist?.length > 0) {
+    const hit = anyContains(location, filter.countryWhitelist)
+    if (!hit && !(filter.allowRemote && /remote/i.test(location))) {
+      return { pass: false, reason: `country not in whitelist: "${location}"` }
+    }
+  }
+  // Country blacklist
+  if (filter.countryBlacklist?.length > 0 && anyContains(location, filter.countryBlacklist)) {
+    return { pass: false, reason: `country blacklisted: "${location}"` }
+  }
+  // Easy Apply only
+  if (filter.easyApplyOnly && !job?.applyUrl?.includes('linkedin.com')) {
+    return { pass: false, reason: 'easyApplyOnly: non-LinkedIn URL' }
+  }
+  return { pass: true }
+}
+
+function isWithinActiveTime(filter) {
+  if (!filter) return true
+  const now = new Date()
+  const hour = now.getHours()
+  const day = ['sun','mon','tue','wed','thu','fri','sat'][now.getDay()]
+  if (filter.activeDays?.length > 0 && !filter.activeDays.includes(day)) return false
+  const start = filter.activeHourStart ?? 0
+  const end = filter.activeHourEnd ?? 23
+  return hour >= start && hour <= end
+}
+
 async function startAutoApply() {
   // Prevent duplicate starts
   const { isRunning } = await chrome.storage.local.get('isRunning')
@@ -285,21 +340,50 @@ async function startAutoApply() {
   await setState({ logs: [] })
   const batchId = await generateBatchId()
   await addLog(`Batch started: ${batchId}`)
-  await addLog('Fetching applications & resume...')
+  await addLog('Fetching applications, resume, & filters...')
 
-  let applications, resumeData
+  let applications, resumeData, filter
   try {
-    [applications, resumeData] = await Promise.all([
+    [applications, resumeData, filter] = await Promise.all([
       fetchSavedApplications(),
       fetchResumeData(),
+      fetchAutoApplyFilter(),
     ])
   } catch (err) {
     await addLog(`Error: ${err.message}`)
     return
   }
 
+  // Time gating
+  if (!isWithinActiveTime(filter)) {
+    await addLog(`⏸ Outside active hours/days (${filter?.activeHourStart}–${filter?.activeHourEnd}, ${(filter?.activeDays || []).join(',') || 'any'}). Stopped.`)
+    return
+  }
+
   if (applications.length === 0) {
     await addLog('No saved jobs to apply')
+    return
+  }
+
+  // Pre-flight filter
+  const preFilterCount = applications.length
+  if (filter) {
+    const filtered = []
+    const stripped = []
+    for (const app of applications) {
+      const r = passesPreflightFilter(app.job, filter)
+      if (r.pass) filtered.push(app)
+      else stripped.push({ title: app.job?.title, reason: r.reason })
+    }
+    if (stripped.length > 0) {
+      await addLog(`📋 Filter: ${preFilterCount} → ${filtered.length} jobs (${stripped.length} excluded)`)
+      stripped.slice(0, 3).forEach(s => addLog(`  ✗ ${s.title}: ${s.reason}`))
+    }
+    applications = filtered
+  }
+
+  if (applications.length === 0) {
+    await addLog('No jobs left after filter')
     return
   }
 
@@ -315,8 +399,13 @@ async function startAutoApply() {
     await addLog('✅ LinkedIn session active')
   }
 
+  // Use filter's maxPerDay if set, else fall back to popup setting
   const { dailyLimit = 20 } = await chrome.storage.local.get('dailyLimit')
-  const queue = applications.slice(0, dailyLimit)
+  const effectiveLimit = filter?.maxPerDay ?? dailyLimit
+  const queue = applications.slice(0, effectiveLimit)
+  if (effectiveLimit < applications.length) {
+    await addLog(`📋 Daily cap: ${effectiveLimit}/${applications.length}`)
+  }
 
   await setState({
     isRunning: true,

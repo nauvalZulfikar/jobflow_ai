@@ -376,6 +376,52 @@ model AutoApplyFailure {
   @@index([hostPattern])
 }
 
+// Per-user filter config consulted by the extension before/during a batch.
+model UserAutoApplyFilter {
+  id String @id @default(cuid())
+  userId String @unique
+
+  // Title rules
+  titleInclude String[]   // job title must contain at least one (empty = no rule)
+  titleExclude String[]   // job title must NOT contain any of these
+
+  // Location
+  allowRemote      Boolean  @default(true)
+  countryWhitelist String[] // empty = allow all
+  countryBlacklist String[]
+
+  // Job type & experience (string keys: "full-time","part-time","contract","internship","temporary"; "entry","junior","mid","senior","lead","manager","director")
+  jobTypesAllowed   String[]
+  experienceAllowed String[]
+
+  // Salary
+  salaryMin            Int?
+  salaryCurrency       String?  @default("IDR")
+  skipIfSalaryRequired Boolean  @default(false)
+
+  // Company
+  companyBlacklist String[]
+
+  // Limits
+  maxPerDay            Int     @default(5)
+  maxPerCompanyPerWeek Int     @default(2)
+
+  // Application source
+  easyApplyOnly Boolean @default(false)
+
+  // Time gating
+  activeHourStart Int      @default(0)   // 0-23, inclusive
+  activeHourEnd   Int      @default(23)  // 0-23, inclusive end-of-hour
+  activeDays      String[]                // ["mon","tue","wed","thu","fri","sat","sun"]; empty = all
+
+  // Form-level skips
+  skipIfCoverLetter Boolean @default(false)
+  skipIfEssay       Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
 // A runtime directive telling the agent how to handle pages matching urlPattern.
 // Generated automatically from AutoApplyFailure.diagnosis when confidence is high enough,
 // or authored manually by the user.

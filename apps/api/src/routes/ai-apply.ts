@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { openai, AI_MODEL, resolveExtensionFields, recoverExtensionField, findApplyButton } from '@jobflow/ai'
 import type { ExtensionField } from '@jobflow/ai'
 import { success, failure } from '@jobflow/shared'
+import { prisma } from '@jobflow/db'
 
 // Vision-capable model (gpt-4o-mini supports vision in chat completions)
 const VISION_MODEL = 'gpt-4o-mini'
@@ -171,7 +172,84 @@ async function callVision(systemPrompt: string, userText: string, screenshotBase
   try { return JSON.parse(text) } catch { return null }
 }
 
+const DEFAULT_FILTER = {
+  titleInclude: [] as string[],
+  titleExclude: [] as string[],
+  allowRemote: true,
+  countryWhitelist: [] as string[],
+  countryBlacklist: [] as string[],
+  jobTypesAllowed: ['full-time', 'contract'] as string[],
+  experienceAllowed: [] as string[],
+  salaryMin: null as number | null,
+  salaryCurrency: 'IDR',
+  skipIfSalaryRequired: false,
+  companyBlacklist: [] as string[],
+  maxPerDay: 5,
+  maxPerCompanyPerWeek: 2,
+  easyApplyOnly: false,
+  activeHourStart: 0,
+  activeHourEnd: 23,
+  activeDays: [] as string[],
+  skipIfCoverLetter: false,
+  skipIfEssay: false,
+}
+
 export async function aiApplyRoutes(app: FastifyInstance) {
+  // GET /api/auto-apply/filters — extension fetches user's filter config (auto-create defaults)
+  app.get('/filters', async (request, reply) => {
+    try {
+      const user = request.user as { id: string }
+      let filter = await prisma.userAutoApplyFilter.findUnique({ where: { userId: user.id } })
+      if (!filter) {
+        filter = await prisma.userAutoApplyFilter.create({
+          data: { userId: user.id, ...DEFAULT_FILTER },
+        })
+      }
+      return reply.send(success(filter))
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send(failure('SERVER_ERROR', 'fetch filter failed'))
+    }
+  })
+
+  // PUT /api/auto-apply/filters — web UI saves user's filter config
+  app.put('/filters', async (request, reply) => {
+    try {
+      const user = request.user as { id: string }
+      const body = request.body as Partial<typeof DEFAULT_FILTER>
+      // Whitelist + sanitize
+      const data: any = {}
+      const arrayKeys = ['titleInclude','titleExclude','countryWhitelist','countryBlacklist','jobTypesAllowed','experienceAllowed','companyBlacklist','activeDays']
+      for (const k of arrayKeys) {
+        if (Array.isArray((body as any)[k])) {
+          data[k] = ((body as any)[k] as any[]).map(v => String(v).trim()).filter(Boolean).slice(0, 100)
+        }
+      }
+      if (typeof body.allowRemote === 'boolean') data.allowRemote = body.allowRemote
+      if (typeof body.skipIfSalaryRequired === 'boolean') data.skipIfSalaryRequired = body.skipIfSalaryRequired
+      if (typeof body.easyApplyOnly === 'boolean') data.easyApplyOnly = body.easyApplyOnly
+      if (typeof body.skipIfCoverLetter === 'boolean') data.skipIfCoverLetter = body.skipIfCoverLetter
+      if (typeof body.skipIfEssay === 'boolean') data.skipIfEssay = body.skipIfEssay
+      if (typeof body.salaryMin === 'number') data.salaryMin = body.salaryMin
+      if (body.salaryMin === null) data.salaryMin = null
+      if (typeof body.salaryCurrency === 'string') data.salaryCurrency = body.salaryCurrency.slice(0, 8)
+      if (typeof body.maxPerDay === 'number') data.maxPerDay = Math.max(1, Math.min(100, body.maxPerDay))
+      if (typeof body.maxPerCompanyPerWeek === 'number') data.maxPerCompanyPerWeek = Math.max(1, Math.min(50, body.maxPerCompanyPerWeek))
+      if (typeof body.activeHourStart === 'number') data.activeHourStart = Math.max(0, Math.min(23, body.activeHourStart))
+      if (typeof body.activeHourEnd === 'number') data.activeHourEnd = Math.max(0, Math.min(23, body.activeHourEnd))
+
+      const filter = await prisma.userAutoApplyFilter.upsert({
+        where: { userId: user.id },
+        update: data,
+        create: { userId: user.id, ...DEFAULT_FILTER, ...data },
+      })
+      return reply.send(success(filter))
+    } catch (err) {
+      request.log.error(err)
+      return reply.status(500).send(failure('SERVER_ERROR', 'save filter failed'))
+    }
+  })
+
   // POST /api/auto-apply/find-button — AI picks which button to click on a job page
   app.post('/find-button', async (request, reply) => {
     try {
@@ -398,7 +476,9 @@ export async function aiApplyRoutes(app: FastifyInstance) {
           const hasSummary = !!resumeAny.summary && String(resumeAny.summary).length > 40
           const stripped: string[] = []
           parsed.actions = parsed.actions.filter((a: any) => {
-            if (a?.action !== 'type' && a?.action !== 'select') return true
+            // Only inspect actions that touch fields (type/select/click/check). Plain "click"
+            // on buttons (Next, Submit, etc) doesn't have a field entry — pass through.
+            if (a?.action !== 'type' && a?.action !== 'select' && a?.action !== 'click' && a?.action !== 'check') return true
             const f = fieldBySelector.get(a.selector)
             if (!f) return true
             const label = String(f.label || '').toLowerCase()
@@ -412,6 +492,21 @@ export async function aiApplyRoutes(app: FastifyInstance) {
               stripped.push(`${a.selector} (essay without summary)`)
               return false
             }
+            // HARD-BLOCK protected-attribute checkboxes/radios. The agent has zero business
+            // affirming the user is Hispanic, a veteran, disabled, holds a security clearance,
+            // etc. — these are dishonest claims that get the user blacklisted. The AI tends to
+            // ignore the prompt rule and click them anyway, so this is a deterministic strip.
+            const protectedAttrRx = /\b(hispanic|latino|race|ethnic|aboriginal|indigenous|veteran|military service|protected vet|disability|disabled|security clearance|secret clearance|top secret|public trust|clearance level|sponsor(ship)?|right\s*to\s*work|work\s*authoriz|gender identity)\b/i
+            const declineOptionRx = /\b(decline|prefer not|do not wish|do not want|rather not|opt out|i'?m not|n\/a)\b/i
+            if ((a.action === 'click' || a.action === 'check' || a.action === 'select') && protectedAttrRx.test(label)) {
+              const valueText = String(a.value ?? '').toLowerCase()
+              // Allow only if the value/option text is clearly a decline/skip
+              if (!declineOptionRx.test(label) && !declineOptionRx.test(valueText)) {
+                stripped.push(`${a.selector} (protected attribute — refusing to affirm)`)
+                return false
+              }
+            }
+
             // Prevent hallucination: if label maps to a known resumeData field AND that field is empty,
             // the AI has no basis to fill it. Strip the action.
             const labelToResumeKey: Array<[RegExp, string]> = [

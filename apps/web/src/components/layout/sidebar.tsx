@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Settings, LogOut, ClipboardCheck, AlertTriangle } from 'lucide-react'
+import { LayoutDashboard, Settings, LogOut, ClipboardCheck, AlertTriangle, SlidersHorizontal } from 'lucide-react'
 import { Briefcase } from 'lucide-react'
 import { signOut } from 'next-auth/react'
 import { cn } from '@/lib/utils'
@@ -55,6 +55,16 @@ export function Sidebar() {
         >
           <AlertTriangle className={cn('h-5 w-5 flex-shrink-0', pathname.startsWith('/failures') ? 'text-blue-600' : 'text-gray-400')} />
           Failures
+        </Link>
+        <Link
+          href="/settings/auto-apply"
+          className={cn(
+            'flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors',
+            pathname.startsWith('/settings/auto-apply') ? 'bg-blue-50 text-blue-700' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          )}
+        >
+          <SlidersHorizontal className={cn('h-5 w-5 flex-shrink-0', pathname.startsWith('/settings/auto-apply') ? 'text-blue-600' : 'text-gray-400')} />
+          Auto-Apply Filters
         </Link>
       </nav>
 

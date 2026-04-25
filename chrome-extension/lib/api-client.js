@@ -283,6 +283,19 @@ export async function pushExtensionLogs(entries) {
   }
 }
 
+// Fetch user's auto-apply filter config (web-defined rules)
+export async function fetchAutoApplyFilter() {
+  const token = await getToken()
+  if (!token) return null
+  try {
+    const res = await fetch(`${API_BASE}/auto-apply/filters`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    })
+    const json = await res.json()
+    return json?.success ? json.data : null
+  } catch { return null }
+}
+
 // Fetch runtime recipes (url → {skipSite, overrides}) for a given apply URL
 export async function fetchRecipes(url) {
   const token = await getToken()
